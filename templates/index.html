@@ -504,10 +504,42 @@
 
     /* ── Mobile Ottimizzazioni ────────────────────────────── */
     @media (max-width: 768px) {
-      .dashboard-header {
-        position: relative; /* Rimuove lo sticky header su mobile per non rubare spazio */
-        backdrop-filter: none;
-        -webkit-backdrop-filter: none;
+      header {
+        position: sticky;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        margin-bottom: 16px;
+      }
+      .header-left h1 {
+        font-size: 20px;
+      }
+      .header-left p {
+        display: none; /* Nascondi sottotitolo per risparmiare spazio */
+      }
+      .header-right {
+        gap: 6px;
+        flex-wrap: nowrap; /* Affiancati */
+        width: 100%;
+        justify-content: space-between;
+      }
+      .badge-info {
+        padding: 4px 8px;
+        min-width: 0;
+        flex: 1;
+      }
+      .badge-info .label {
+        font-size: 9px;
+      }
+      .badge-info .value {
+        font-size: 14px;
+      }
+      #btn-aggiorna {
+        padding: 6px 10px;
+        font-size: 11px;
+        flex: 1;
+        justify-content: center;
+        text-align: center;
+        line-height: 1.2;
       }
     }
   </style>
@@ -536,11 +568,10 @@
       </div>
       <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
         <button id="btn-aggiorna" onclick="avviaaAggiornamento()">
-          <span class="btn-icon">🔄</span>
           <div class="spinner"></div>
-          <span id="btn-text">Aggiorna Prezzi</span>
+          <span class="btn-text">Aggiorna<br>Prezzi</span>
         </button>
-        <span id="last-update">—</span>
+        <div id="last-update">—</div>
       </div>
     </div>
   </header>
