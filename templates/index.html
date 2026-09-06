@@ -501,6 +501,15 @@
       border-top: 1px solid var(--border);
       margin-top: 40px;
     }
+
+    /* ── Mobile Ottimizzazioni ────────────────────────────── */
+    @media (max-width: 768px) {
+      .dashboard-header {
+        position: relative; /* Rimuove lo sticky header su mobile per non rubare spazio */
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+    }
   </style>
 </head>
 <body>
