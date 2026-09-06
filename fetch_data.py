@@ -195,7 +195,11 @@ def _get_ttf_df(start, end):
     if _ttf_cache is not None:
         return _ttf_cache
     try:
-        _ttf_cache = yf.download("TTF=F", start=start.isoformat(), end=end.isoformat(), progress=False)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        _ttf_cache = yf.download("TTF=F", start=start.isoformat(), end=end.isoformat(), progress=False, session=session)
         return _ttf_cache
     except Exception as e:
         print(f"[ERROR] TTF download fallito: {e}")
