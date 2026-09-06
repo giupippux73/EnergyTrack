@@ -1,0 +1,15 @@
+﻿{
+  "name": "EnergyTrack",
+  "short_name": "EnergyTrack",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0f1a",
+  "theme_color": "#0b0f1a",
+  "icons": [
+    {
+      "src": "/static/icon.jpg",
+      "sizes": "1024x1024",
+      "type": "image/jpeg"
+    }
+  ]
+}
