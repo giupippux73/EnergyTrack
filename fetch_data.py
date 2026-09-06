@@ -12,14 +12,23 @@ Salva tutto in dati_energia.json
 import io
 import json
 import re
-import zipfile
+import os
 import requests
-import urllib3
-import yfinance as yf
+import warnings
+import zipfile
 import pandas as pd
 from datetime import date, timedelta, datetime
 from pathlib import Path
+from io import StringIO
+from collections import defaultdict
 
+# Configura yfinance per usare /tmp su Vercel (file system in sola lettura)
+os.environ["YFINANCE_CACHE_DIR"] = "/tmp"
+os.environ["XDG_CACHE_HOME"] = "/tmp"
+import yfinance as yf
+import urllib3
+
+warnings.simplefilter(action='ignore', category=FutureWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_DIR = Path(__file__).parent
@@ -190,6 +199,7 @@ def _get_ttf_df(start, end):
         return _ttf_cache
     except Exception as e:
         print(f"[ERROR] TTF download fallito: {e}")
+        _ttf_cache = f"ERRORE YFINANCE: {e}"
         return None
 
 def _stima_pun_da_ttf(months: int = 14) -> dict[str, float]:
@@ -222,6 +232,8 @@ def fetch_psv_daily(months: int = 14) -> dict[str, dict]:
     start = end - timedelta(days=months * 31)
     try:
         df = _get_ttf_df(start, end)
+        if isinstance(df, str):
+            raise ValueError(df)
         if df is None or df.empty:
             raise ValueError("Nessun dato TTF")
 
@@ -235,7 +247,7 @@ def fetch_psv_daily(months: int = 14) -> dict[str, dict]:
         }
     except Exception as e:
         print(f"[ERROR] Fetch TTF fallito: {e}")
-        return {}
+        return {"error": str(e)}
 
 
 # ─── Calcolo medie mensili ────────────────────────────────────────────────────
