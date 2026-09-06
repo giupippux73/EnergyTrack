@@ -1,0 +1,1212 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EnergyTrack — LifeOS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0b0f1a;
+      --surface:     #111827;
+      --surface2:    #1a2235;
+      --border:      rgba(255,255,255,0.08);
+      --text:        #e2e8f0;
+      --text-muted:  #6b7280;
+      --accent-pun:  #f59e0b;
+      --accent-psv:  #10b981;
+      --accent-blue: #3b82f6;
+      --accent-red:  #ef4444;
+      --glass:       rgba(255,255,255,0.04);
+      --radius:      16px;
+      --shadow:      0 8px 32px rgba(0,0,0,0.4);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Background gradient animato ────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 20%, rgba(245,158,11,0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 80% at 80% 80%, rgba(16,185,129,0.05) 0%, transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ──────────────────────────────────────────── */
+    .container { max-width: 1400px; margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+    /* ── Header ─────────────────────────────────────────── */
+    header {
+      padding: 20px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 32px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(11, 15, 26, 0.85); /* var(--bg) con trasparenza per backdrop-filter */
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      margin-left: -24px;
+      margin-right: -24px;
+      padding-left: 24px;
+      padding-right: 24px;
+    }
+
+    .header-left h1 {
+      font-size: 26px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #10b981, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .header-left p {
+      color: var(--text-muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .badge-info {
+      background: var(--glass);
+      border: 1px solid var(--border);
+      padding: 8px 14px;
+      border-radius: 10px;
+      font-size: 13px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 100px;
+    }
+
+    .badge-info .label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .badge-info .value { font-weight: 700; font-size: 18px; margin-top: 2px; }
+    .badge-info.pun .value { color: var(--accent-pun); }
+    .badge-info.psv .value { color: var(--accent-psv); }
+
+    #btn-aggiorna {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      color: #000;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-family: 'Inter', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+      box-shadow: 0 4px 16px rgba(245,158,11,0.3);
+    }
+
+    #btn-aggiorna:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(245,158,11,0.4); }
+    #btn-aggiorna:active { transform: translateY(0); }
+    #btn-aggiorna:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid rgba(0,0,0,0.3);
+      border-top-color: #000;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: none;
+    }
+
+    #btn-aggiorna.loading .spinner { display: block; }
+    #btn-aggiorna.loading .btn-icon { display: none; }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #last-update { font-size: 11px; color: var(--text-muted); text-align: center; }
+
+    /* ── Status bar ─────────────────────────────────────── */
+    #status-bar {
+      background: rgba(16,185,129,0.1);
+      border: 1px solid rgba(16,185,129,0.2);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 13px;
+      color: #6ee7b7;
+      display: none;
+      margin-bottom: 20px;
+    }
+
+    /* ── Cards grid ─────────────────────────────────────── */
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--accent-color, #f59e0b), transparent);
+    }
+
+    .card.pun { --accent-color: #f59e0b; }
+    .card.psv { --accent-color: #10b981; }
+    .card.sim { --accent-color: #3b82f6; }
+    .card.engie { --accent-color: #8b5cf6; }
+
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .card-title .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--accent-color, #f59e0b);
+      box-shadow: 0 0 8px var(--accent-color, #f59e0b);
+    }
+
+    /* ── Chart containers ───────────────────────────────── */
+    .chart-wrap { position: relative; height: 280px; }
+
+    /* ── Tabella mensile ────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      color: var(--text);
+    }
+
+    tr:hover td { background: var(--glass); }
+    tr:last-child td { border-bottom: none; }
+
+    .td-pun { color: var(--accent-pun); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .td-psv { color: var(--accent-psv); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .td-stima { color: var(--accent-blue); font-weight: 600; }
+
+    /* ── Simulatore ────────────────────────────────────── */
+    .sim-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    @media (max-width: 600px) { .sim-grid { grid-template-columns: 1fr; } }
+
+    .input-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
+    .input-group input, .input-group select {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input-group input:focus, .input-group select:focus {
+      border-color: var(--accent-blue);
+    }
+
+    #btn-simula {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-family: 'Inter', sans-serif;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.2s;
+      box-shadow: 0 4px 16px rgba(59,130,246,0.3);
+    }
+
+    #btn-simula:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(59,130,246,0.4); }
+
+    .sim-result {
+      margin-top: 20px;
+      padding: 20px;
+      background: var(--surface2);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      display: none;
+    }
+
+    .sim-result.visible { display: block; animation: fadeIn 0.3s ease; }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+    .sim-result h3 {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 14px;
+    }
+
+    .sim-breakdown {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .sim-item { padding: 12px; background: var(--glass); border-radius: 10px; }
+    .sim-item .si-label { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+    .sim-item .si-val { font-size: 18px; font-weight: 700; }
+    .sim-item.luce .si-val { color: var(--accent-pun); }
+    .sim-item.gas .si-val { color: var(--accent-psv); }
+
+    .sim-totale {
+      padding: 16px;
+      background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(59,130,246,0.05));
+      border: 1px solid rgba(59,130,246,0.3);
+      border-radius: 12px;
+      text-align: center;
+    }
+
+    .sim-totale .label { font-size: 12px; color: var(--text-muted); }
+    .sim-totale .amount { font-size: 36px; font-weight: 800; color: #60a5fa; margin: 4px 0; }
+    .sim-totale .note { font-size: 11px; color: var(--text-muted); }
+
+    /* ── Parametri contratto ────────────────────────────── */
+    .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+
+    .param-item {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+
+    .param-item label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+
+    .param-item input {
+      width: 100%;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 4px 0;
+      outline: none;
+    }
+
+    #btn-salva-params {
+      margin-top: 16px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-family: 'Inter', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s;
+    }
+
+    #btn-salva-params:hover { background: rgba(255,255,255,0.08); }
+
+    /* ── Sezione Engie ──────────────────────────────────── */
+    .engie-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-box {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      text-align: center;
+    }
+
+    .stat-box .stat-val { font-size: 22px; font-weight: 800; color: #a78bfa; }
+    .stat-box .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Section titles ─────────────────────────────────── */
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── Toast notification ─────────────────────────────── */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      padding: 14px 20px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 500;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s;
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.success { background: rgba(16,185,129,0.2); border: 1px solid rgba(16,185,129,0.4); color: #6ee7b7; }
+    #toast.error { background: rgba(239,68,68,0.2); border: 1px solid rgba(239,68,68,0.4); color: #fca5a5; }
+    #toast.info { background: rgba(59,130,246,0.2); border: 1px solid rgba(59,130,246,0.4); color: #93c5fd; }
+
+    /* ── Loader overlay ─────────────────────────────────── */
+    .skeleton {
+      background: linear-gradient(90deg, var(--surface2) 25%, rgba(255,255,255,0.05) 50%, var(--surface2) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 6px;
+      height: 14px;
+      width: 80%;
+    }
+
+    @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+    /* ── Modal Engie ────────────────────────────────────── */
+    .modal-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(11, 15, 26, 0.85);
+      backdrop-filter: blur(4px);
+      z-index: 2000;
+      display: none;
+      align-items: center; justify-content: center;
+      padding: 20px;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-content {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      width: 100%; max-width: 1200px; max-height: 90vh;
+      overflow-y: auto; padding: 24px; position: relative;
+    }
+    .modal-close {
+      position: absolute; top: 20px; right: 24px;
+      background: var(--glass); border: 1px solid var(--border);
+      color: var(--text); padding: 8px 12px; border-radius: 8px;
+      cursor: pointer; font-family: 'Inter', sans-serif;
+      transition: all 0.2s;
+    }
+    .modal-close:hover { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.4); color: #fca5a5; }
+
+    #btn-engie {
+      background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+      color: #fff; border: none; padding: 12px 20px; border-radius: 12px;
+      font-family: 'Inter', sans-serif; font-weight: 700; font-size: 14px;
+      cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 16px rgba(139,92,246,0.3);
+    }
+    #btn-engie:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(139,92,246,0.4); }
+
+    footer {
+      text-align: center;
+      padding: 32px 0 24px;
+      color: var(--text-muted);
+      font-size: 12px;
+      border-top: 1px solid var(--border);
+      margin-top: 40px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Toast notification -->
+<div id="toast"></div>
+
+<div class="container">
+
+  <!-- ═══ HEADER ═══════════════════════════════════════════ -->
+  <header>
+    <div class="header-left">
+      <h1>⚡ EnergyTrack</h1>
+      <p>Monitoraggio PUN, PSV e Stima Bolletta (Cloud)</p>
+    </div>
+    <div class="header-right">
+      <div class="badge-info pun" id="badge-pun">
+        <span class="label">PUN oggi</span>
+        <span class="value" id="pun-oggi">—</span>
+      </div>
+      <div class="badge-info psv" id="badge-psv">
+        <span class="label">PSV oggi</span>
+        <span class="value" id="psv-oggi">—</span>
+      </div>
+      <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+        <button id="btn-aggiorna" onclick="avviaaAggiornamento()">
+          <span class="btn-icon">🔄</span>
+          <div class="spinner"></div>
+          <span id="btn-text">Aggiorna Prezzi</span>
+        </button>
+        <span id="last-update">—</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Status bar -->
+  <div id="status-bar">⏳ Aggiornamento in corso — recupero dati da GME e TTF...</div>
+
+  <!-- ═══ SEZIONE 1: GRAFICI PUN E PSV ════════════════════ -->
+  <div class="section-title">📈 Andamento Prezzi — Ultimi 13 Mesi</div>
+  <div class="grid-2">
+
+    <!-- Grafico PUN -->
+    <div class="card pun">
+      <div class="card-title"><span class="dot"></span> PUN — Energia Elettrica (€/kWh)</div>
+      <div class="chart-wrap">
+        <canvas id="chartPUN"></canvas>
+      </div>
+    </div>
+
+    <!-- Grafico PSV -->
+    <div class="card psv">
+      <div class="card-title"><span class="dot"></span> PSV/TTF — Gas Naturale (€/Smc)</div>
+      <div class="chart-wrap">
+        <canvas id="chartPSV"></canvas>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══ SEZIONE 2: TABELLA MEDIE MENSILI ════════════════ -->
+  <div class="section-title">📋 Medie Mensili e Stime Bollette</div>
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-title"><span class="dot" style="background:#3b82f6;box-shadow:0 0 8px #3b82f6"></span> Riepilogo Mensile</div>
+    <div class="table-wrap">
+      <table id="tabella-mensile">
+        <thead>
+          <tr>
+            <th>Mese</th>
+            <th>PUN (€/kWh)</th>
+            <th>PUN (€/MWh)</th>
+            <th>Fonte PUN</th>
+            <th>PSV (€/Smc)</th>
+            <th>PSV/TTF (€/MWh)</th>
+            <th>Fonte PSV</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-mensile">
+          <tr><td colspan="7"><div class="skeleton"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-title"><span class="dot" style="background:#f59e0b;box-shadow:0 0 8px #f59e0b"></span> Andamento Giornaliero (Ultimi 90 giorni)</div>
+    <div class="table-wrap" style="max-height: 400px; overflow-y: auto;">
+      <table id="tabella-giornaliera">
+        <thead style="position: sticky; top: 0; background: var(--surface); z-index: 10;">
+          <tr>
+            <th>Data</th>
+            <th>PUN (€/kWh)</th>
+            <th>PUN (€/MWh)</th>
+            <th>Var. PUN</th>
+            <th>PSV (€/Smc)</th>
+            <th>PSV/TTF (€/MWh)</th>
+            <th>Var. PSV</th>
+          </tr>
+        </thead>
+        <tbody id="tbody-giornaliero">
+          <tr><td colspan="7"><div class="skeleton"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══ SEZIONE 3: SIMULATORE BOLLETTE ══════════════════ -->
+  <div class="section-title">🧮 Simulatore Bolletta Sorgenia</div>
+  <div class="grid-2" style="margin-bottom:24px;">
+
+    <div class="card sim">
+      <div class="card-title"><span class="dot" style="background:#3b82f6;box-shadow:0 0 8px #3b82f6"></span> Parametri Simulazione</div>
+      <div class="sim-grid">
+        <div class="input-group">
+          <label>Consumi Luce (kWh)</label>
+          <input type="number" id="sim-kwh" value="376" min="0" step="10" />
+        </div>
+        <div class="input-group">
+          <label>Consumi Gas (Smc)</label>
+          <input type="number" id="sim-smc" value="52" min="0" step="1" />
+        </div>
+        <div class="input-group">
+          <label>Mese di riferimento</label>
+          <select id="sim-mese">
+            <option value="">— Ultimo disponibile —</option>
+          </select>
+        </div>
+        <div class="input-group">
+          <label>Sconto SEQUOIA15 residuo (€)</label>
+          <input type="number" id="sim-sconto" value="6.67" min="0" step="0.01" />
+        </div>
+      </div>
+      <button id="btn-simula" onclick="simulaBolletta()">📊 Calcola Bolletta Stimata</button>
+    </div>
+
+    <div class="card sim">
+      <div class="card-title"><span class="dot" style="background:#60a5fa;box-shadow:0 0 8px #60a5fa"></span> Risultato Simulazione</div>
+      <div class="sim-result" id="sim-result">
+        <h3>Dettaglio spese</h3>
+        <div class="sim-breakdown">
+          <div class="sim-item luce">
+            <div class="si-label">⚡ Luce</div>
+            <div class="si-val" id="res-luce">—</div>
+            <div class="si-label" id="res-dettaglio-luce" style="font-size:12px; margin-top:8px; line-height:1.4;"></div>
+            <div class="si-label" id="res-prezzo-luce" style="margin-top:8px; font-weight:700;">—</div>
+          </div>
+          <div class="sim-item gas">
+            <div class="si-label">🔥 Gas</div>
+            <div class="si-val" id="res-gas">—</div>
+            <div class="si-label" id="res-dettaglio-gas" style="font-size:12px; margin-top:8px; line-height:1.4;"></div>
+            <div class="si-label" id="res-prezzo-gas" style="margin-top:8px; font-weight:700;">—</div>
+          </div>
+        </div>
+        <div class="sim-totale">
+          <div class="label">TOTALE STIMATO</div>
+          <div class="amount" id="res-totale">—</div>
+          <div class="note" id="res-note">—</div>
+        </div>
+      </div>
+      <div id="sim-placeholder" style="padding:40px; text-align:center; color:var(--text-muted);">
+        ← Imposta i parametri e clicca "Calcola"
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══ SEZIONE 4: PARAMETRI CONTRATTO ══════════════════ -->
+  <div class="section-title">⚙️ Parametri Contratto Sorgenia</div>
+  <div class="card" style="margin-bottom:24px;">
+    <div class="card-title"><span class="dot" style="background:#f59e0b;box-shadow:0 0 8px #f59e0b"></span> Condizioni Economiche (modificabili)</div>
+    <div class="param-grid">
+      <div class="param-item">
+        <label>Fee Luce — anno 1 (€/kWh)</label>
+        <input type="number" id="p-fee-luce" value="0.014" step="0.001" min="0" />
+      </div>
+      <div class="param-item">
+        <label>Fee Gas — anno 1 (€/Smc)</label>
+        <input type="number" id="p-fee-gas" value="0.050" step="0.001" min="0" />
+      </div>
+      <div class="param-item">
+        <label>Perdite rete ARERA</label>
+        <input type="number" id="p-perdite" value="0.098" step="0.001" min="0" max="0.2" />
+      </div>
+      <div class="param-item">
+        <label>Quota fissa Luce (€/anno)</label>
+        <input type="number" id="p-pod" value="72.00" step="0.01" min="0" />
+      </div>
+      <div class="param-item">
+        <label>Quota fissa Gas (€/anno)</label>
+        <input type="number" id="p-pdr" value="72.00" step="0.01" min="0" />
+      </div>
+    </div>
+    <button id="btn-salva-params" onclick="salvaParametri()">💾 Aggiorna Parametri (sessione corrente)</button>
+  </div>
+
+  <footer>
+    LifeOS · Dashboard Energia · Dati GME e TTF · Aggiornato <span id="footer-date">—</span>
+  </footer>
+
+</div><!-- /container -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// STATO GLOBALE
+// ═══════════════════════════════════════════════════════════════════════
+let datiEnergia = null;
+let chartPUN = null, chartPSV = null;
+let pollingInterval = null;
+
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITÀ
+// ═══════════════════════════════════════════════════════════════════════
+
+function fmt(val, decimals = 4) {
+  if (val === null || val === undefined || isNaN(val)) return '—';
+  return Number(val).toLocaleString('it-IT', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+}
+
+function fmtEur(val) {
+  if (val === null || val === undefined || isNaN(val)) return '—';
+  return Number(val).toLocaleString('it-IT', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2, style: 'currency', currency: 'EUR'
+  });
+}
+
+function fmtMese(ym) {
+  // "2026-09" → "Set 2026"
+  const mesi = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+  const [y, m] = ym.split('-');
+  return mesi[parseInt(m) - 1] + ' ' + y;
+}
+
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show ' + type;
+  setTimeout(() => { t.className = ''; }, 4000);
+}
+
+// La funzione caricaTutto() non è più necessaria su Vercel (nessun file JSON locale).
+// Usiamo direttamente avviaaAggiornamento() all'avvio.
+
+// ═══════════════════════════════════════════════════════════════════════
+// RENDER ENERGIA (PUN + PSV)
+// ═══════════════════════════════════════════════════════════════════════
+
+function renderEnergia() {
+  const d = datiEnergia;
+  if (!d) return;
+
+  // Badge header
+  const punDaily = d.pun_daily || {};
+  const psvDaily = d.psv_daily || {};
+  const punKeys = Object.keys(punDaily).sort();
+  const psvKeys = Object.keys(psvDaily).sort();
+
+  if (punKeys.length) {
+    const lastPUN = punDaily[punKeys[punKeys.length - 1]];
+    document.getElementById('pun-oggi').textContent = fmt(lastPUN, 4) + ' €/kWh';
+  }
+  if (psvKeys.length) {
+    const lastPSV = psvDaily[psvKeys[psvKeys.length - 1]];
+    document.getElementById('psv-oggi').textContent = fmt(lastPSV, 4) + ' €/Smc';
+  }
+
+  // Last update
+  if (d.aggiornato_il) {
+    const dt = new Date(d.aggiornato_il);
+    const label = dt.toLocaleString('it-IT', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    document.getElementById('last-update').textContent = 'Agg. ' + label;
+    document.getElementById('footer-date').textContent = label;
+  }
+
+  // Grafici daily
+  renderChartDaily('chartPUN', punKeys, punKeys.map(k => punDaily[k]), '#f59e0b', '#fbbf24', '€/kWh', chartPUN, (c) => chartPUN = c);
+  renderChartDaily('chartPSV', psvKeys, psvKeys.map(k => psvDaily[k]), '#10b981', '#34d399', '€/Smc', chartPSV, (c) => chartPSV = c);
+
+  // Tabella mensile
+  renderTabellaMensile(d);
+  
+  // Tabella giornaliera
+  renderTabellaGiornaliera(d);
+
+  // Popola select mese nel simulatore
+  popolaSelectMese(d);
+}
+
+function renderChartDaily(canvasId, labels, data, color, colorLight, yLabel, existingChart, setter) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+
+  // Filtra ultimi 13 mesi
+  const oggi = new Date();
+  const limite = new Date(oggi.getFullYear(), oggi.getMonth() - 13, 1);
+  const filtered = labels.reduce((acc, lbl, i) => {
+    if (new Date(lbl) >= limite) { acc.l.push(lbl); acc.d.push(data[i]); }
+    return acc;
+  }, { l: [], d: [] });
+
+  if (existingChart) existingChart.destroy();
+
+  const gradient = ctx.createLinearGradient(0, 0, 0, 280);
+  gradient.addColorStop(0, color + '33');
+  gradient.addColorStop(1, color + '00');
+
+  const chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: filtered.l,
+      datasets: [{
+        label: yLabel,
+        data: filtered.d,
+        borderColor: color,
+        backgroundColor: gradient,
+        borderWidth: 1.5,
+        pointRadius: filtered.l.length > 200 ? 0 : 2,
+        pointHoverRadius: 5,
+        pointBackgroundColor: colorLight,
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          backgroundColor: '#1a2235',
+          borderColor: color + '44',
+          borderWidth: 1,
+          titleColor: '#9ca3af',
+          bodyColor: color,
+          callbacks: {
+            title: (items) => items[0].label,
+            label: (item) => `  ${yLabel}: ${fmt(item.raw, 5)}`,
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: {
+            color: '#6b7280',
+            maxTicksLimit: 12,
+            font: { size: 10 },
+            callback: (val, i) => {
+              const lbl = filtered.l[i];
+              if (!lbl) return '';
+              return lbl.substring(5); // MM-DD
+            }
+          }
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { color: '#6b7280', font: { size: 10 }, callback: v => fmt(v, 4) },
+          position: 'right',
+        }
+      },
+      interaction: { mode: 'nearest', axis: 'x', intersect: false },
+    }
+  });
+  setter(chart);
+}
+
+function renderTabellaMensile(d) {
+  const tbody = document.getElementById('tbody-mensile');
+  const pun_m = d.pun_monthly || {};
+  const psv_m = d.psv_monthly || {};
+  const fonti_pun = d.fonti_pun || {};
+  const fonti_psv = d.fonti_psv || {};
+
+  // Prendi gli ultimi 13 mesi comuni
+  const allMesi = [...new Set([...Object.keys(pun_m), ...Object.keys(psv_m)])].sort().slice(-13);
+
+  let html = '';
+  for (const mese of allMesi) {
+    const pun = pun_m[mese];
+    const psv = psv_m[mese];
+    const f_pun = fonti_pun[mese] || "—";
+    const f_psv = fonti_psv[mese] || "—";
+    html += `<tr>
+      <td>${fmtMese(mese)}</td>
+      <td class="td-pun">${pun ? fmt(pun, 5) : '—'}</td>
+      <td style="color:var(--text-muted)">${pun ? fmt(pun * 1000, 2) : '—'}</td>
+      <td style="font-size:10px; color:var(--text-muted)">${f_pun}</td>
+      <td class="td-psv">${psv ? fmt(psv, 4) : '—'}</td>
+      <td style="color:var(--text-muted)">${psv ? fmt(psv / 0.0107, 2) : '—'}</td>
+      <td style="font-size:10px; color:var(--text-muted)">${f_psv}</td>
+    </tr>`;
+  }
+  tbody.innerHTML = html || '<tr><td colspan="7" style="color:var(--text-muted)">Nessun dato disponibile — clicca Aggiorna Prezzi</td></tr>';
+
+  // Popola select simulatore
+  const sel = document.getElementById('sim-mese');
+  const currentVal = sel.value;
+  sel.innerHTML = '<option value="">— Ultimo disponibile —</option>';
+  for (const mese of allMesi.reverse()) {
+    sel.innerHTML += `<option value="${mese}">${fmtMese(mese)}</option>`;
+  }
+  if (currentVal) sel.value = currentVal;
+}
+
+function popolaSelectMese(d) {
+  // già fatto in renderTabellaMensile
+}
+
+function renderTabellaGiornaliera(d) {
+  const tbody = document.getElementById('tbody-giornaliero');
+  const pun = d.pun_daily || {};
+  const psv = d.psv_daily || {};
+  
+  // Get last 90 days from PUN or PSV keys
+  const allDays = [...new Set([...Object.keys(pun), ...Object.keys(psv)])].sort().slice(-90).reverse();
+  
+  let html = '';
+  for (let i = 0; i < allDays.length; i++) {
+    const dataOggi = allDays[i];
+    const dataIeri = allDays[i+1]; // i+1 because reversed
+    
+    const punOggi = pun[dataOggi];
+    const psvOggi = psv[dataOggi];
+    const punIeri = dataIeri ? pun[dataIeri] : null;
+    const psvIeri = dataIeri ? psv[dataIeri] : null;
+    
+    // calc variazione %
+    let varPun = '—';
+    if (punOggi && punIeri) {
+        const perc = ((punOggi - punIeri) / punIeri) * 100;
+        const color = perc > 0 ? 'var(--accent-red)' : (perc < 0 ? 'var(--accent-psv)' : 'var(--text-muted)');
+        const sign = perc > 0 ? '+' : '';
+        varPun = `<span style="color:${color}">${sign}${perc.toFixed(2)}%</span>`;
+    }
+    
+    let varPsv = '—';
+    if (psvOggi && psvIeri) {
+        const perc = ((psvOggi - psvIeri) / psvIeri) * 100;
+        const color = perc > 0 ? 'var(--accent-red)' : (perc < 0 ? 'var(--accent-psv)' : 'var(--text-muted)');
+        const sign = perc > 0 ? '+' : '';
+        varPsv = `<span style="color:${color}">${sign}${perc.toFixed(2)}%</span>`;
+    }
+    
+    const parts = dataOggi.split('-');
+    const dataFmt = parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0].substring(2)}` : dataOggi;
+    
+    html += `<tr>
+      <td>${dataFmt}</td>
+      <td class="td-pun">${punOggi ? fmt(punOggi, 5) : '—'}</td>
+      <td style="color:var(--text-muted)">${punOggi ? fmt(punOggi * 1000, 2) : '—'}</td>
+      <td style="font-size:12px; font-weight:600;">${varPun}</td>
+      <td class="td-psv">${psvOggi ? fmt(psvOggi, 4) : '—'}</td>
+      <td style="color:var(--text-muted)">${psvOggi ? fmt(psvOggi / 0.0107, 2) : '—'}</td>
+      <td style="font-size:12px; font-weight:600;">${varPsv}</td>
+    </tr>`;
+  }
+  tbody.innerHTML = html || '<tr><td colspan="7" style="color:var(--text-muted)">Nessun dato giornaliero disponibile</td></tr>';
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// RENDER STORICO ENGIE
+// ═══════════════════════════════════════════════════════════════════════
+
+function renderEngie() {
+  const e = datiEngie;
+  if (!e || !e.fatture) return;
+
+  const fatture = e.fatture;
+  const totSpeso = fatture.reduce((s, f) => s + f.importo, 0);
+  const totKwh = fatture.reduce((s, f) => s + f.kwh, 0);
+  const totSmc = fatture.reduce((s, f) => s + f.smc, 0);
+  const mediaBI = totSpeso / fatture.length;
+
+  // Stats
+  document.getElementById('engie-stats').innerHTML = `
+    <div class="stat-box"><div class="stat-val">${fmtEur(totSpeso)}</div><div class="stat-label">Tot. speso (2 anni)</div></div>
+    <div class="stat-box"><div class="stat-val">${fmtEur(mediaBI)}</div><div class="stat-label">Media bimestrale</div></div>
+    <div class="stat-box"><div class="stat-val">${totKwh.toLocaleString('it-IT')}</div><div class="stat-label">kWh totali</div></div>
+    <div class="stat-box"><div class="stat-val">${totSmc}</div><div class="stat-label">Smc totali</div></div>
+    <div class="stat-box"><div class="stat-val">${fatture.length}</div><div class="stat-label">Bollette archiviate</div></div>
+  `;
+
+  const labels = fatture.map(f => fmtMese(f.id));
+
+  // Grafico importi
+  renderBarChart('chartEngie', labels,
+    [{ label: 'Importo €', data: fatture.map(f => f.importo), color: '#8b5cf6' }],
+    '#8b5cf6');
+
+  // Grafico consumi
+  renderBarChart('chartEngieCons', labels, [
+    { label: 'kWh Luce', data: fatture.map(f => f.kwh), color: '#f59e0b' },
+    { label: 'Smc Gas', data: fatture.map(f => f.smc), color: '#10b981' },
+  ], '#8b5cf6');
+
+  // Tabella
+  let html = '';
+  for (const f of fatture) {
+    // Stima costo unitario (approssimata: non abbiamo il dettaglio luce/gas separato)
+    const eff_kwh = f.kwh > 0 ? (f.importo * 0.6 / f.kwh) : null;
+    const eff_smc = f.smc > 0 ? (f.importo * 0.4 / f.smc) : null;
+    html += `<tr>
+      <td>${fmtMese(f.id)}</td>
+      <td>${f.emessa}</td>
+      <td style="color:#a78bfa;font-weight:700">${fmtEur(f.importo)}</td>
+      <td class="td-pun">${f.kwh}</td>
+      <td class="td-psv">${f.smc}</td>
+      <td style="color:var(--text-muted)">${eff_kwh ? fmt(eff_kwh, 4) : '—'}</td>
+      <td style="color:var(--text-muted)">${eff_smc ? fmt(eff_smc, 3) : '—'}</td>
+    </tr>`;
+  }
+  document.getElementById('tbody-engie').innerHTML = html;
+}
+
+function renderBarChart(canvasId, labels, datasets, accentColor) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+
+  // Distruggi chart precedente se esiste
+  const existing = Chart.getChart(canvasId);
+  if (existing) existing.destroy();
+
+  new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: datasets.map(ds => ({
+        label: ds.label,
+        data: ds.data,
+        backgroundColor: ds.color + 'bb',
+        borderColor: ds.color,
+        borderWidth: 1,
+        borderRadius: 6,
+      }))
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: {
+          display: datasets.length > 1,
+          labels: { color: '#9ca3af', font: { size: 11 } }
+        },
+        tooltip: {
+          backgroundColor: '#1a2235',
+          borderColor: accentColor + '44',
+          borderWidth: 1,
+          titleColor: '#9ca3af',
+          bodyColor: '#e2e8f0',
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { color: '#6b7280', font: { size: 10 } }
+        },
+        y: {
+          grid: { color: 'rgba(255,255,255,0.04)' },
+          ticks: { color: '#6b7280', font: { size: 10 } },
+          position: 'right',
+        }
+      }
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// AGGIORNAMENTO PREZZI
+// ═══════════════════════════════════════════════════════════════════════
+
+async function avviaaAggiornamento() {
+  const btn = document.getElementById('btn-aggiorna');
+  btn.classList.add('loading');
+  btn.disabled = true;
+  document.getElementById('btn-text').textContent = 'Scarico prezzi...';
+  document.getElementById('status-bar').style.display = 'block';
+
+  try {
+    const r = await fetch('/api/aggiorna', { method: 'POST' });
+    const data = await r.json();
+    
+    if (data.errore) {
+      throw new Error(data.errore);
+    }
+    
+    datiEnergia = data;
+    renderEnergia();
+    
+    showToast('✅ Dati scaricati con successo!', 'success');
+  } catch (e) {
+    showToast('❌ Errore: ' + e.message, 'error');
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+    document.getElementById('btn-text').textContent = 'Aggiorna Prezzi';
+    document.getElementById('status-bar').style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SIMULATORE BOLLETTE
+// ═══════════════════════════════════════════════════════════════════════
+
+async function simulaBolletta() {
+  const kwh = parseFloat(document.getElementById('sim-kwh').value) || 0;
+  const smc = parseFloat(document.getElementById('sim-smc').value) || 0;
+  const sconto = parseFloat(document.getElementById('sim-sconto').value) || 0;
+  const mese = document.getElementById('sim-mese').value;
+
+  // Determina PUN e PSV per il mese selezionato (o ultimo disponibile)
+  let pun_medio = 0, psv_medio = 0, mese_label = 'ultimo disponibile';
+
+  if (datiEnergia) {
+    const pun_m = datiEnergia.pun_monthly || {};
+    const psv_m = datiEnergia.psv_monthly || {};
+
+    if (mese && pun_m[mese]) {
+      pun_medio = pun_m[mese];
+      psv_medio = psv_m[mese] || 0;
+      mese_label = fmtMese(mese);
+    } else {
+      // Prendi l'ultimo disponibile
+      const lastPunKey = Object.keys(pun_m).sort().pop();
+      const lastPsvKey = Object.keys(psv_m).sort().pop();
+      if (lastPunKey) { pun_medio = pun_m[lastPunKey]; mese_label = fmtMese(lastPunKey); }
+      if (lastPsvKey) psv_medio = psv_m[lastPsvKey];
+    }
+  }
+
+  if (!pun_medio && !psv_medio) {
+    showToast('⚠️ Nessun dato disponibile. Clicca Aggiorna Prezzi prima.', 'error');
+    return;
+  }
+
+  try {
+    const r = await fetch('/api/simula', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pun_medio, psv_medio, kwh, smc, sconto_residuo: sconto })
+    });
+    const res = await r.json();
+
+    if (res.errore) { showToast('❌ ' + res.errore, 'error'); return; }
+
+    document.getElementById('res-luce').textContent = fmtEur(res.spesa_luce);
+    document.getElementById('res-dettaglio-luce').innerHTML = 
+      `Materia: ${fmtEur(res.dettagli_luce.materia)}<br>` +
+      `Spread/Fee: ${fmtEur(res.dettagli_luce.spread)}<br>` +
+      `Quota Fissa: ${fmtEur(res.dettagli_luce.fissa)}`;
+    document.getElementById('res-prezzo-luce').textContent = fmt(res.prezzo_luce_kwh, 5) + ' €/kWh medio effettivo';
+    
+    document.getElementById('res-gas').textContent = fmtEur(res.spesa_gas);
+    document.getElementById('res-dettaglio-gas').innerHTML = 
+      `Materia: ${fmtEur(res.dettagli_gas.materia)}<br>` +
+      `Spread/Fee: ${fmtEur(res.dettagli_gas.spread)}<br>` +
+      `Quota Fissa: ${fmtEur(res.dettagli_gas.fissa)}`;
+    document.getElementById('res-prezzo-gas').textContent = fmt(res.prezzo_gas_smc, 4) + ' €/Smc medio effettivo';
+    
+    document.getElementById('res-totale').textContent = fmtEur(res.totale);
+    document.getElementById('res-note').textContent =
+      `Mese: ${mese_label} · PUN ${fmt(pun_medio,5)} · PSV ${fmt(psv_medio,4)} · Sconto -${fmtEur(sconto)}`;
+
+    document.getElementById('sim-result').classList.add('visible');
+    document.getElementById('sim-placeholder').style.display = 'none';
+
+  } catch (e) {
+    showToast('❌ Errore simulazione: ' + e.message, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SALVA PARAMETRI
+// ═══════════════════════════════════════════════════════════════════════
+
+async function salvaParametri() {
+  const params = {
+    fee_luce_kwh: parseFloat(document.getElementById('p-fee-luce').value),
+    fee_gas_smc: parseFloat(document.getElementById('p-fee-gas').value),
+    perdite_rete: parseFloat(document.getElementById('p-perdite').value),
+    quota_fissa_pod_anno: parseFloat(document.getElementById('p-pod').value),
+    quota_fissa_pdr_anno: parseFloat(document.getElementById('p-pdr').value),
+  };
+
+  try {
+    const r = await fetch('/api/parametri', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    });
+    const res = await r.json();
+    showToast('✅ ' + res.messaggio, 'success');
+    // Ricalcola tabella mensile con nuovi parametri
+    if (datiEnergia) renderTabellaMensile(datiEnergia);
+  } catch (e) {
+    showToast('❌ Errore: ' + e.message, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// INIT VERCEL SERVERLESS
+// ═══════════════════════════════════════════════════════════════════════
+document.addEventListener('DOMContentLoaded', () => {
+  avviaaAggiornamento();
+});
+</script>
+</body>
+</html>
