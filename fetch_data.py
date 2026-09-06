@@ -215,9 +215,11 @@ def _stima_pun_da_ttf(months: int = 14) -> dict[str, float]:
         end = date.today()
         start = end - timedelta(days=months * 31)
         df = _get_ttf_df(start, end)
+        if isinstance(df, str):
+            raise ValueError(df)
         if df is None or df.empty:
             return {}
-        close = df["Close"].iloc[:, 0] if hasattr(df["Close"], "iloc") else df["Close"]
+        close = df["Close"]
         results = {}
         for idx, val in close.items():
             if not pd.isna(val):
@@ -244,7 +246,7 @@ def fetch_psv_daily(months: int = 14) -> dict[str, dict]:
         if df is None or df.empty:
             raise ValueError("Nessun dato TTF")
 
-        close = df["Close"].iloc[:, 0] if hasattr(df["Close"], "iloc") else df["Close"]
+        close = df["Close"]
         factor = PCS / 3.6
 
         return {
