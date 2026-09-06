@@ -21,11 +21,6 @@ from datetime import date, timedelta, datetime
 from pathlib import Path
 from io import StringIO
 from collections import defaultdict
-
-# Configura yfinance per usare /tmp su Vercel (file system in sola lettura)
-os.environ["YFINANCE_CACHE_DIR"] = "/tmp"
-os.environ["XDG_CACHE_HOME"] = "/tmp"
-import yfinance as yf
 import urllib3
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -195,16 +190,24 @@ def _get_ttf_df(start, end):
     if _ttf_cache is not None:
         return _ttf_cache
     try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
-        _ttf_cache = yf.download("TTF=F", start=start.isoformat(), end=end.isoformat(), progress=False, session=session)
+        url = f"https://query2.finance.yahoo.com/v8/finance/chart/TTF=F?range=2y&interval=1d"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        
+        result = data['chart']['result'][0]
+        timestamps = result['timestamp']
+        closes = result['indicators']['quote'][0]['close']
+        
+        df = pd.DataFrame({"Close": closes}, index=pd.to_datetime(timestamps, unit='s'))
+        # Filtra date
+        df = df[(df.index.date >= start) & (df.index.date <= end)]
+        
+        _ttf_cache = df
         return _ttf_cache
     except Exception as e:
         print(f"[ERROR] TTF download fallito: {e}")
-        _ttf_cache = f"ERRORE YFINANCE: {e}"
-        return None
+        return f"ERRORE YAHOO API: {e}"
 
 def _stima_pun_da_ttf(months: int = 14) -> dict[str, float]:
     """Stima il PUN in base alla correlazione termo-economica con il gas TTF. PUN_MWh ≈ TTF_MWh * 2.1 + 45"""
