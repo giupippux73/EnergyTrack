@@ -877,8 +877,8 @@ function renderTabellaMensile(d) {
   const fonti_pun = d.fonti_pun || {};
   const fonti_psv = d.fonti_psv || {};
 
-  // Prendi gli ultimi 13 mesi comuni
-  const allMesi = [...new Set([...Object.keys(pun_m), ...Object.keys(psv_m)])].sort().slice(-13);
+  // Prendi gli ultimi 13 mesi comuni e invertili (dal più recente)
+  const allMesi = [...new Set([...Object.keys(pun_m), ...Object.keys(psv_m)])].sort().slice(-13).reverse();
 
   let html = '';
   for (const mese of allMesi) {

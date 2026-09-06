@@ -247,7 +247,7 @@ def fetch_psv_daily(months: int = 14) -> dict[str, dict]:
         }
     except Exception as e:
         print(f"[ERROR] Fetch TTF fallito: {e}")
-        return {"error": str(e)}
+        return {"1970-01-01": {"val": 0, "fonte": f"ERRORE YFINANCE: {str(e)}"}}
 
 
 # ─── Calcolo medie mensili ────────────────────────────────────────────────────
