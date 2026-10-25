@@ -1,45 +1,76 @@
 """
 app.py — EnergyTrack Dashboard (Vercel Serverless)
 ==========================================
+Nessun salvataggio su server: i dati arrivano dal GME a ogni apertura.
+Per stare nei limiti di Vercel il gas si scarica un mese per richiesta e
+le risposte vengono messe in cache sulla CDN di Vercel (s-maxage): i mesi
+chiusi restano in cache 30 giorni, il mese in corso e il PUN 15 minuti.
+
 Endpoints:
-  GET  /              → Dashboard HTML
-  POST /api/aggiorna  → Scarica dati e ritorna JSON on-the-fly
-  POST /api/simula    → Calcola stima bolletta con parametri custom
-  POST /api/parametri → Aggiorna parametri temporanei in memoria
+  GET  /                → Dashboard HTML
+  GET  /api/pun         → PUN giornaliero e mensile (GME)
+  GET  /api/gas/YYYY-MM → Prezzi gas MGP-GAS di un mese (GME, €/MWh)
+  POST /api/simula      → Calcola stima bolletta con parametri custom
+  POST /api/parametri   → Aggiorna parametri temporanei in memoria
 """
 
-import json
-from pathlib import Path
+from datetime import date, timedelta
 from flask import Flask, jsonify, render_template, request
 
 import fetch_data
 
-BASE_DIR = Path(__file__).parent
-
 app = Flask(__name__, template_folder="templates")
+
+CACHE_BREVE = "public, max-age=0, s-maxage=900, stale-while-revalidate=3600"
+CACHE_LUNGA = "public, max-age=0, s-maxage=2592000"
+
 
 @app.after_request
 def add_header(r):
-    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, public, max-age=0"
-    r.headers["Pragma"] = "no-cache"
-    r.headers["Expires"] = "0"
+    # Le API impostano la propria cache CDN; tutto il resto non va in cache
+    if "Cache-Control" not in r.headers:
+        r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, public, max-age=0"
+        r.headers["Pragma"] = "no-cache"
+        r.headers["Expires"] = "0"
     return r
+
+
+def _errore(e: Exception):
+    print(f"[ERROR] {e}")
+    return jsonify({"errore": fetch_data._motivo(e)}), 502
+
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route("/api/aggiorna", methods=["POST", "GET"])
-def api_aggiorna():
-    """Vercel serverless: scarica e ritorna i dati all'istante."""
-    import urllib3
-    urllib3.disable_warnings()
+
+@app.route("/api/pun")
+def api_pun():
     try:
-        data = fetch_data.aggiorna()
-        return jsonify(data)
+        daily, monthly = fetch_data.fetch_pun(months=14)
     except Exception as e:
-        print(f"[ERROR] Aggiornamento fallito: {e}")
-        return jsonify({"errore": str(e)}), 500
+        return _errore(e)
+    r = jsonify({"pun_daily": daily, "pun_monthly": monthly})
+    r.headers["Cache-Control"] = CACHE_BREVE
+    return r
+
+
+@app.route("/api/gas/<int:anno>-<int:mese>")
+def api_gas(anno, mese):
+    if not 1 <= mese <= 12:
+        return jsonify({"errore": "Mese non valido"}), 400
+    try:
+        giorni = fetch_data.fetch_psv_mese(anno, mese)
+    except Exception as e:
+        return _errore(e)
+    # Un mese è definitivo quando anche le ultime sessioni sono chiuse
+    fine_mese = date(anno + mese // 12, mese % 12 + 1, 1) - timedelta(days=1)
+    definitivo = fine_mese < date.today() - timedelta(days=fetch_data.GIORNI_GAS_DA_RICONTROLLARE)
+    r = jsonify({"mese": f"{anno}-{mese:02d}", "giorni": giorni, "definitivo": definitivo})
+    r.headers["Cache-Control"] = CACHE_LUNGA if definitivo and giorni else CACHE_BREVE
+    return r
+
 
 @app.route("/api/simula", methods=["POST"])
 def api_simula():
@@ -55,6 +86,7 @@ def api_simula():
         return jsonify(risultato)
     except Exception as e:
         return jsonify({"errore": str(e)}), 400
+
 
 @app.route("/api/parametri", methods=["POST"])
 def api_aggiorna_parametri():
@@ -72,8 +104,9 @@ def api_aggiorna_parametri():
             }
             if k in mapping:
                 setattr(fetch_data, mapping[k], float(v))
-    
+
     return jsonify({"messaggio": "Parametri temporanei aggiornati per la sessione."})
+
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)

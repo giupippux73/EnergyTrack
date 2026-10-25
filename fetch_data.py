@@ -1,30 +1,28 @@
 """
-fetch_data.py — Recupero dati PUN e PSV/TTF
-=============================================
-PUN  : Download file ZIP/CSV storici dal portale GME (accesso pubblico).
-       Fallback: stima da EEX via yfinance se GME non risponde.
-PSV  : TTF Amsterdam via yfinance (proxy correlato al PSV italiano).
-       Conversione TTF (€/MWh) → PSV (€/Smc) con PCS = 0.03852 GJ/Smc.
+fetch_data.py — Recupero dati reali PUN e PSV dal GME
+======================================================
+Fonte unica: sezione "Esiti" del portale gme.mercatoelettrico.org.
+Le pagine Esiti leggono i dati da API interne del sito (DNN), che rispondono
+solo se la richiesta porta i codici di sessione rilasciati dalla pagina stessa
+(ModuleId, TabId, RequestVerificationToken + cookie). Qui si fa lo stesso.
 
-Salva tutto in dati_energia.json
+PUN : Esiti → Elettricità → MGP → PUN Index GME
+      medie giornaliere e mensili ufficiali (€/MWh → €/kWh).
+PSV : Esiti → Gas → MGP-GAS → Negoziazione Continua
+      prezzo di riferimento del prodotto giornaliero MGP-<giorno di consegna>
+      (€/MWh → €/Smc con PCS = 0.03852 GJ/Smc).
+
+Nessuna stima: se il GME non risponde si mantengono gli ultimi dati salvati
+e si segnala l'avviso. Tutto viene salvato in dati_energia.json.
 """
 
-import io
 import json
 import re
-import os
+import statistics
 import requests
-import warnings
-import zipfile
-import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta, datetime
 from pathlib import Path
-from io import StringIO
-from collections import defaultdict
-import urllib3
-
-warnings.simplefilter(action='ignore', category=FutureWarning)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_DIR = Path(__file__).parent
 OUTPUT = BASE_DIR / "dati_energia.json"
@@ -41,281 +39,188 @@ QUOTA_FISSA_PDR = 72.0  # €/anno — Corrispettivo commercializzazione gas (co
 MESI_SCONTO = 15        # numero di bollette con sconto SEQUOIA15
 SCONTO_TOT = 100.0      # € totali sconto (50€ luce + 50€ gas)
 
+# ─── Portale GME ─────────────────────────────────────────────────────────────
+GME_SITE = "https://gme.mercatoelettrico.org"
+PAGINA_PUN = "/it-it/Home/Esiti/Elettricita/MGP/Esiti/PUN"
+PAGINA_GAS = "/it-it/Home/Esiti/Gas/MGP-GAS/Esiti/NegoziazioneContinua"
+API_PUN = GME_SITE + "/DesktopModules/GmeEsitiPrezziME/API/item/GetMEPrezzi"
+API_GAS = GME_SITE + "/DesktopModules/GmeEsitiMGAS/API/item/GetGasEsitiMGAS"
+FONTE = "Reale (GME)"
+FONTE_PARZIALE = "Reale (GME) · mese in corso"
+GIORNI_GAS_DA_RICONTROLLARE = 3  # le sessioni più recenti possono essere ancora aperte
+
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36"
 }
 
 
-# ─── Fetch PUN dal portale GME (download CSV mensile) ─────────────────────────
+class GMEError(Exception):
+    pass
 
-def _gme_mese_url(anno: int, mese: int) -> str:
+
+# ─── Sessione GME ────────────────────────────────────────────────────────────
+
+def _sessione_gme(pagina: str, modulo: str) -> tuple[requests.Session, dict]:
     """
-    Il GME mette a disposizione un file CSV per ogni mese di ogni anno
-    tramite un endpoint con token specifico.
-    Alternativa: download dal portale ARERA o da XML pubblici GME.
+    Apre la pagina Esiti come farebbe un browser e ricava gli header che le
+    API del modulo DNN richiedono. Ritorna (sessione con cookie, header).
     """
-    # Endpoint GME storico MGP - PUN giornaliero
-    # Formato URL: il GME fornisce file per anno/mese
-    return (
-        f"https://gme.mercatoelettrico.org/GME/DesktopModules/GmeDownload/API/"
-        f"ExcelDownload/downloadsGme/downloadexcelreport"
-        f"?DataInizio={anno}{mese:02d}01"
-        f"&DataFine={anno}{mese:02d}31"
-        f"&Date={anno}{mese:02d}28"
-        f"&Mercato=MGP&Zona=PUN&Periodo=G&FileType=CSV"
-    )
+    s = requests.Session()
+    s.headers.update(HEADERS)
+    r = s.get(GME_SITE + pagina, timeout=20)
+    r.raise_for_status()
+    html = r.text
 
+    token = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', html)
+    inizio = html.find(f'window["{modulo}"]')
+    blocco = html[inizio:html.find("</script>", inizio)] if inizio >= 0 else ""
+    module_id = re.search(r'"ModuleId"\s*:\s*(\d+)', blocco)
+    tab_id = re.search(r'"TabId"\s*:\s*(\d+)', blocco)
+    if not (token and module_id and tab_id):
+        raise GMEError(f"Pagina GME cambiata: impossibile leggere i codici di sessione per {modulo}")
 
-def fetch_pun_daily_gme(months: int = 14) -> dict[str, float]:
-    """
-    Tenta di scaricare i dati PUN giornalieri dal portale GME.
-    Ritorna dict {YYYY-MM-DD: €/kWh}
-    """
-    end = date.today()
-    results: dict[str, float] = {}
-
-    current = date(end.year, end.month, 1)
-    start_limit = date(end.year - 2, end.month, 1)
-
-    while current >= start_limit and len(results) < months * 28:
-        url = _gme_mese_url(current.year, current.month)
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-            if r.status_code == 200 and "text" in r.headers.get("content-type", "").lower():
-                # Prova parsing CSV
-                lines = r.text.strip().split("\n")
-                for line in lines[1:]:  # salta header
-                    parts = re.split(r"[;,\t]", line.strip())
-                    if len(parts) >= 2:
-                        try:
-                            day_str = parts[0].strip().strip('"')
-                            val_str = parts[1].strip().strip('"').replace(",", ".")
-                            day_obj = datetime.strptime(day_str, "%d/%m/%Y").date()
-                            val_mwh = float(val_str)
-                            results[day_obj.isoformat()] = round(val_mwh / 1000, 6)
-                        except (ValueError, IndexError):
-                            pass
-        except Exception:
-            pass
-
-        # Mese precedente
-        if current.month == 1:
-            current = date(current.year - 1, 12, 1)
-        else:
-            current = date(current.year, current.month - 1, 1)
-
-    return results
-
-
-def fetch_pun_daily_arera(months: int = 14) -> dict[str, float]:
-    """
-    Fallback: scarica PUN mensile dall'ARERA (prezzi medi mensili).
-    L'ARERA pubblica un file Excel con i prezzi medi mensili del PUN.
-    """
-    results: dict[str, float] = {}
-    try:
-        # ARERA pubblica prezzi energia in formato Excel
-        url = "https://www.arera.it/it/dati/eepcds.htm"
-        r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
-        if r.status_code != 200:
-            return results
-        # Cerca link a file Excel
-        xls_links = re.findall(r'href=["\']([^"\']*\.xls[x]?)["\']', r.text, re.IGNORECASE)
-        for link in xls_links[:3]:
-            full_url = link if link.startswith("http") else "https://www.arera.it" + link
-            r2 = requests.get(full_url, headers=HEADERS, timeout=20, verify=False)
-            if r2.status_code == 200:
-                try:
-                    df = pd.read_excel(io.BytesIO(r2.content), sheet_name=0)
-                    # Cerca colonna PUN e date
-                    for col in df.columns:
-                        if "pun" in str(col).lower():
-                            for idx, val in enumerate(df[col]):
-                                try:
-                                    if isinstance(val, (int, float)) and 10 < val < 500:
-                                        results[f"2025-{idx+1:02d}-15"] = round(val / 1000, 6)
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    return results
-
-
-def fetch_pun_daily(months: int = 14) -> dict[str, dict]:
-    """
-    Strategia multi-fonte per il PUN. Restituisce {YYYY-MM-DD: {"val": 0.18, "fonte": "..."}}
-    """
-    pun_daily = {}
-    
-    # 1. Scraping GME per dati giornalieri
-    pun_gme = fetch_pun_daily_gme(months)
-    for data_str, val in pun_gme.items():
-        pun_daily[data_str] = {"val": val, "fonte": "Reale (GME)"}
-
-    # 2. Scraping ARERA (se mancano dati)
-    if len(pun_daily) < months * 15:
-        pun_arera = fetch_pun_daily_arera(months)
-        for data_str, val in pun_arera.items():
-            if data_str not in pun_daily:
-                pun_daily[data_str] = {"val": val, "fonte": "Reale (ARERA)"}
-
-    # 3. Stima Termo-economica (riempie tutti i buchi giornalieri)
-    pun_stima = _stima_pun_da_ttf(months)
-    for data_str, val in pun_stima.items():
-        if data_str not in pun_daily:
-            pun_daily[data_str] = {"val": val, "fonte": "Stima (Proxy TTF)"}
-
-    # 4. Sovrascrittura manuale dati giornalieri forniti dall'utente (per farli coincidere al millesimo)
-    storico_giornaliero = {
-        "2026-08-22": 0.160556, "2026-08-23": 0.128419, "2026-08-24": 0.192765,
-        "2026-08-25": 0.190541, "2026-08-26": 0.198075, "2026-08-27": 0.205524,
-        "2026-08-28": 0.205520, "2026-08-29": 0.193793, "2026-08-30": 0.172727,
-        "2026-08-31": 0.197306, "2026-09-01": 0.198818, "2026-09-02": 0.212709,
-        "2026-09-03": 0.212462, "2026-09-04": 0.211174, "2026-09-05": 0.196009,
-        "2026-09-06": 0.191747
+    return s, {
+        "ModuleId": module_id.group(1),
+        "TabId": tab_id.group(1),
+        "RequestVerificationToken": token.group(1),
+        "Accept": "application/json",
+        "Referer": GME_SITE + pagina,
     }
-    for d_str, v_val in storico_giornaliero.items():
-        pun_daily[d_str] = {"val": v_val, "fonte": "Reale (GME)"}
-
-    return pun_daily
 
 
-# Cache globale per TTF
-_ttf_cache = None
+def _get_json(s: requests.Session, headers: dict, url: str, params: dict):
+    r = s.get(url, headers=headers, params=params, timeout=20)
+    if r.status_code != 200:
+        raise GMEError(f"GME ha risposto HTTP {r.status_code} ({url.rsplit('/', 1)[-1]})")
+    return r.json()
 
-def _get_ttf_df(start, end):
-    global _ttf_cache
-    if _ttf_cache is not None:
-        return _ttf_cache
-    try:
-        url = f"https://query2.finance.yahoo.com/v8/finance/chart/TTF=F?range=2y&interval=1d"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36"}
-        r = requests.get(url, headers=headers, timeout=10)
-        data = r.json()
-        
-        result = data['chart']['result'][0]
-        timestamps = result['timestamp']
-        closes = result['indicators']['quote'][0]['close']
-        
-        df = pd.DataFrame({"Close": closes}, index=pd.to_datetime(timestamps, unit='s'))
-        # Filtra date
-        df = df[(df.index.date >= start) & (df.index.date <= end)]
-        
-        _ttf_cache = df
-        return _ttf_cache
-    except Exception as e:
-        print(f"[ERROR] TTF download fallito: {e}")
-        return f"ERRORE YAHOO API: {e}"
 
-def _stima_pun_da_ttf(months: int = 14) -> dict[str, float]:
-    """Stima il PUN in base alla correlazione termo-economica con il gas TTF. PUN_MWh ≈ TTF_MWh * 2.1 + 45"""
-    try:
-        end = date.today()
-        start = end - timedelta(days=months * 31)
-        df = _get_ttf_df(start, end)
-        if isinstance(df, str):
-            raise ValueError(df)
-        if df is None or df.empty:
-            return {}
-        close = df["Close"]
-        results = {}
-        for idx, val in close.items():
-            if not pd.isna(val):
-                pun_mwh_stima = float(val) * 2.1 + 45.0
-                # MGP (Mercato Giorno Prima): il gas scambiato oggi determina l'energia di domani
-                giorno_consegna = idx.date() + timedelta(days=1)
-                results[str(giorno_consegna)] = round(pun_mwh_stima / 1000, 6)
-        return results
-    except Exception as e:
-        print(f"    [WARN] Stima TTF fallita: {e}")
+def _yyyymmdd(d: date) -> str:
+    return d.strftime("%Y%m%d")
+
+
+def _inizio_periodo(months: int) -> date:
+    """Primo giorno del mese di `months` mesi fa (così i mesi sono completi)."""
+    oggi = date.today()
+    m = oggi.year * 12 + (oggi.month - 1) - months
+    return date(m // 12, m % 12 + 1, 1)
+
+
+# ─── PUN: Esiti MGP → PUN Index GME ──────────────────────────────────────────
+
+def fetch_pun(months: int = 14) -> tuple[dict[str, float], dict[str, float]]:
+    """
+    Ritorna (giornaliero {YYYY-MM-DD: €/kWh}, mensile {YYYY-MM: €/kWh}).
+    Il GME pubblica verso le 13 anche il PUN del giorno dopo: è incluso.
+    """
+    s, headers = _sessione_gme(PAGINA_PUN, "GmeEsitiPrezziME")
+    base = {"Mercato": "MGP", "Zona": "PUN", "Tipologia": "PUN",
+            "DataInizio": _yyyymmdd(_inizio_periodo(months)),
+            "DataFine": _yyyymmdd(date.today() + timedelta(days=1))}
+
+    giorni = _get_json(s, headers, API_PUN, {**base, "Granularita": "d"})
+    mesi = _get_json(s, headers, API_PUN, {**base, "Granularita": "m"})
+    if not giorni:
+        raise GMEError("Il GME non ha restituito dati PUN giornalieri")
+
+    daily = {}
+    for row in giorni:
+        df = str(row["df"])
+        daily[f"{df[:4]}-{df[4:6]}-{df[6:8]}"] = round(row["p"] / 1000, 6)
+
+    monthly = {}
+    for row in mesi:
+        df = str(row["df"])
+        monthly[f"{df[:4]}-{df[4:6]}"] = round(row["p"] / 1000, 6)
+
+    return dict(sorted(daily.items())), dict(sorted(monthly.items()))
+
+
+# ─── PSV: Esiti MGP-GAS → prezzo di riferimento ──────────────────────────────
+
+def fetch_psv_mwh(months: int = 14, cache: dict[str, float] | None = None) -> dict[str, float]:
+    """
+    Ritorna {YYYY-MM-DD (giorno di consegna): €/MWh}.
+    Il GME espone una sessione di negoziazione per richiesta, quindi si
+    scaricano solo i giorni mancanti in cache più gli ultimi giorni (ancora
+    soggetti a variazione). Il prodotto MGP-D può essere trattato in più
+    sessioni (es. nel weekend): vale il prezzo dell'ultima sessione.
+    """
+    prezzi = dict(cache or {})
+    inizio = _inizio_periodo(months)
+    domani = date.today() + timedelta(days=1)
+    soglia_ricontrollo = date.today() - timedelta(days=GIORNI_GAS_DA_RICONTROLLARE)
+
+    consegne = [inizio + timedelta(days=i) for i in range((domani - inizio).days + 1)]
+    sessioni = sorted({c - timedelta(days=1) for c in consegne
+                       if c.isoformat() not in prezzi or c >= soglia_ricontrollo})
+    if not sessioni:
+        return prezzi
+
+    print(f"    --> {len(sessioni)} sessioni MGP-GAS da scaricare")
+    _prezzi_riferimento(_scarica_sessioni(sessioni), prezzi)
+
+    limite = inizio.isoformat()
+    return {k: v for k, v in sorted(prezzi.items()) if k >= limite}
+
+
+def fetch_psv_mese(anno: int, mese: int, parallelo: int = 4) -> dict[str, float]:
+    """
+    Prezzi gas {YYYY-MM-DD: €/MWh} per i giorni di consegna di un solo mese
+    (fino a domani). Usato dalla versione Vercel, che scarica un mese per
+    richiesta così ogni mese chiuso resta in cache sulla CDN.
+    """
+    primo = date(anno, mese, 1)
+    ultimo = date(anno + mese // 12, mese % 12 + 1, 1) - timedelta(days=1)
+    fine = min(ultimo, date.today() + timedelta(days=1))
+    if fine < primo:
         return {}
+    sessioni = [primo + timedelta(days=i - 1) for i in range((fine - primo).days + 1)]
+    prezzi = _prezzi_riferimento(_scarica_sessioni(sessioni, parallelo), {})
+    return {k: v for k, v in sorted(prezzi.items()) if primo.isoformat() <= k <= fine.isoformat()}
 
 
-# ─── Fetch PSV via TTF ────────────────────────────────────────────────────────
+def _scarica_sessioni(sessioni: list[date], parallelo: int = 1) -> list[list[dict]]:
+    """Esiti MGP-GAS di ogni sessione, nello stesso ordine di `sessioni`."""
+    s, headers = _sessione_gme(PAGINA_GAS, "GmeEsitiMGAS")
 
-def fetch_psv_daily(months: int = 14) -> dict[str, dict]:
-    """Scarica TTF (€/MWh) e converte in PSV (€/Smc)."""
-    end = date.today()
-    start = end - timedelta(days=months * 31)
-    try:
-        df = _get_ttf_df(start, end)
-        if isinstance(df, str):
-            raise ValueError(df)
-        if df is None or df.empty:
-            raise ValueError("Nessun dato TTF")
+    def una(sessione: date) -> list[dict]:
+        return _get_json(s, headers, API_GAS, {"DataSessione": _yyyymmdd(sessione), "Mercato": "MGP"})
 
-        close = df["Close"]
-        factor = PCS / 3.6
+    if parallelo > 1:
+        with ThreadPoolExecutor(max_workers=parallelo) as pool:
+            return list(pool.map(una, sessioni))
+    return [una(sessione) for sessione in sessioni]
 
-        return {
-            str(idx.date()): {"val": round(float(val) * factor, 4), "fonte": "Proxy (TTF EEX)"}
-            for idx, val in close.items()
-            if not pd.isna(val)
-        }
-    except Exception as e:
-        print(f"[ERROR] Fetch TTF fallito: {e}")
-        return {"1970-01-01": {"val": 0, "fonte": f"ERRORE YFINANCE: {str(e)}"}}
+
+def _prezzi_riferimento(risposte: list[list[dict]], prezzi: dict[str, float]) -> dict[str, float]:
+    """Aggiorna `prezzi` con il prezzo di riferimento dei prodotti MGP-<giorno>; l'ultima sessione vince."""
+    for righe in risposte:
+        for riga in righe:
+            prodotto = riga.get("prodotto") or ""
+            rif = riga.get("prezzoRiferimento")
+            if prodotto.startswith("MGP-") and rif is not None:
+                prezzi[prodotto[4:]] = round(float(rif), 6)
+    return prezzi
+
+
+def psv_smc(mwh: float) -> float:
+    """€/MWh → €/Smc (1 Smc = PCS GJ = PCS/3.6 MWh)."""
+    return round(mwh * PCS / 3.6, 6)
 
 
 # ─── Calcolo medie mensili ────────────────────────────────────────────────────
 
-def calcola_medie_mensili_pun(daily: dict[str, dict]) -> tuple[dict[str, float], dict[str, str]]:
-    """Restituisce (medie_mensili, fonti_mensili) dando priorità ai dati storici ufficiali."""
-    monthly: dict[str, list] = {}
-    fonti: dict[str, str] = {}
-    
-    # Raggruppa i dati giornalieri per mese
-    for day_str, data in daily.items():
-        month_key = day_str[:7]
-        monthly.setdefault(month_key, []).append(data["val"])
-        curr_fonte = fonti.get(month_key, "")
-        if "Reale" in data["fonte"] or not curr_fonte:
-            fonti[month_key] = data["fonte"]
-
-    # Medie calcolate dai dati giornalieri
-    medie = {
-        k: round(sum(v) / len(v), 6)
-        for k, v in sorted(monthly.items())
-        if v
-    }
-    
-    # Sovrascrivi con i dati storici ufficiali GME
-    storico_reale = {
-        "2025-08": 0.108789, "2025-09": 0.109076, "2025-10": 0.111042, "2025-11": 0.117085,
-        "2025-12": 0.115490, "2026-01": 0.132665, "2026-02": 0.114405, "2026-03": 0.143400,
-        "2026-04": 0.119466, "2026-05": 0.119351, "2026-06": 0.132505, "2026-07": 0.157038,
-        "2026-08": 0.179999, "2026-09": 0.206234
-    }
-    for mese, val in storico_reale.items():
-        # Se il mese corrente non è finito (es. settembre 2026), potremmo voler usare
-        # la media calcolata dinamicamente. Ma se vogliamo coincidere col GME parziale,
-        # applichiamo l'hardcoded.
-        medie[mese] = val
-        fonti[mese] = "Reale (GME)"
-
-    return medie, fonti
+def medie_mensili(daily: dict[str, float]) -> dict[str, float]:
+    per_mese: dict[str, list] = {}
+    for giorno, val in daily.items():
+        per_mese.setdefault(giorno[:7], []).append(val)
+    return {mese: round(statistics.mean(v), 6) for mese, v in sorted(per_mese.items())}
 
 
-def calcola_medie_mensili(daily: dict[str, dict]) -> tuple[dict[str, float], dict[str, str]]:
-    """Restituisce (medie_mensili, fonti_mensili) per il PSV"""
-    monthly: dict[str, list] = {}
-    fonti: dict[str, str] = {}
-    
-    for day_str, data in daily.items():
-        month_key = day_str[:7]
-        monthly.setdefault(month_key, []).append(data["val"])
-        curr_fonte = fonti.get(month_key, "")
-        if "Reale" in data["fonte"] or not curr_fonte:
-            fonti[month_key] = data["fonte"]
-
-    medie = {
-        k: round(sum(v) / len(v), 6)
-        for k, v in sorted(monthly.items())
-        if v
-    }
-    return medie, fonti
+def fonti_mensili(mesi) -> dict[str, str]:
+    mese_corrente = date.today().strftime("%Y-%m")
+    return {m: FONTE_PARZIALE if m >= mese_corrente else FONTE for m in mesi}
 
 
 # ─── Stima bolletta Sorgenia ─────────────────────────────────────────────────
@@ -366,26 +271,60 @@ def stima_bolletta(
 
 # ─── Main: aggiorna dati_energia.json ────────────────────────────────────────
 
-def aggiorna():
-    global _ttf_cache
-    _ttf_cache = None  # Resetta cache ad ogni aggiornamento manuale
-    
-    print("[*] Recupero dati PUN...")
-    pun_daily = fetch_pun_daily(months=14)
-    pun_monthly, fonti_pun = calcola_medie_mensili_pun(pun_daily)
-    print(f"    --> {len(pun_daily)} giorni PUN | {len(pun_monthly)} mesi")
+def _motivo(e: Exception) -> str:
+    """Messaggio breve e leggibile per l'avviso in dashboard."""
+    if isinstance(e, GMEError):
+        return str(e)
+    if isinstance(e, (requests.ConnectionError, requests.Timeout)):
+        return "GME non raggiungibile: connessione assente o sito non disponibile"
+    return f"errore imprevisto ({type(e).__name__})"
 
-    print("[*] Recupero dati PSV...")
-    psv_daily = fetch_psv_daily(months=14)
-    psv_monthly, fonti_psv = calcola_medie_mensili(psv_daily)
-    print(f"    --> {len(psv_daily)} giorni PSV | {len(psv_monthly)} mesi")
 
-    # Prepara daily per JSON (solo valori)
-    pun_daily_clean = {k: v["val"] for k, v in pun_daily.items()}
-    psv_daily_clean = {k: v["val"] for k, v in psv_daily.items()}
+def _leggi_cache() -> dict:
+    """Ritorna i dati salvati solo se provengono dal GME (scarta le vecchie stime TTF)."""
+    try:
+        with open(OUTPUT, encoding="utf-8") as f:
+            dati = json.load(f)
+        return dati if dati.get("fonte_dati") == "GME" else {}
+    except (OSError, ValueError):
+        return {}
 
+
+def aggiorna(months: int = 14) -> dict:
+    cache = _leggi_cache()
+    avvisi = []
+
+    print("[*] Recupero PUN dal GME...")
+    try:
+        pun_daily, pun_monthly = fetch_pun(months)
+        print(f"    --> {len(pun_daily)} giorni PUN | {len(pun_monthly)} mesi")
+    except Exception as e:
+        print(f"[ERROR] PUN: {e}")
+        avvisi.append(f"PUN non aggiornato ({_motivo(e)})")
+        pun_daily, pun_monthly = cache.get("pun_daily", {}), cache.get("pun_monthly", {})
+
+    print("[*] Recupero PSV (MGP-GAS) dal GME...")
+    psv_cache = cache.get("psv_daily_mwh", {})
+    try:
+        psv_mwh = fetch_psv_mwh(months, psv_cache)
+        print(f"    --> {len(psv_mwh)} giorni PSV")
+    except Exception as e:
+        print(f"[ERROR] PSV: {e}")
+        avvisi.append(f"PSV non aggiornato ({_motivo(e)})")
+        psv_mwh = psv_cache
+
+    if not pun_daily and not psv_mwh:
+        raise GMEError("; ".join(avvisi) or "Nessun dato disponibile dal GME")
+
+    psv_daily = {k: psv_smc(v) for k, v in psv_mwh.items()}
+    psv_monthly = medie_mensili(psv_daily)
+
+    # Se non è arrivato nulla di nuovo, la data di aggiornamento resta quella dei dati salvati
+    nessun_dato_nuovo = len(avvisi) == 2
     payload = {
-        "aggiornato_il": datetime.now().isoformat(timespec="seconds"),
+        "aggiornato_il": cache.get("aggiornato_il") if nessun_dato_nuovo else datetime.now().isoformat(timespec="seconds"),
+        "fonte_dati": "GME",
+        "avviso": " · ".join(avvisi) or None,
         "parametri": {
             "fee_luce_kwh": FEE_LUCE,
             "fee_luce_anno2_kwh": FEE_LUCE_ANNO2,
@@ -396,16 +335,21 @@ def aggiorna():
             "quota_fissa_pdr_anno": QUOTA_FISSA_PDR,
             "pcs_gj_smc": PCS,
         },
-        "pun_daily": pun_daily_clean,
-        "psv_daily": psv_daily_clean,
+        "pun_daily": pun_daily,
+        "psv_daily": psv_daily,
+        "psv_daily_mwh": psv_mwh,
         "pun_monthly": pun_monthly,
-        "fonti_pun": fonti_pun,
+        "fonti_pun": fonti_mensili(pun_monthly),
         "psv_monthly": psv_monthly,
-        "fonti_psv": fonti_psv,
+        "fonti_psv": fonti_mensili(psv_monthly),
     }
 
-    print(f"[OK] Dati scaricati con successo.")
+    with open(OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    print(f"[OK] Salvato in {OUTPUT}" + (f" (con avvisi: {payload['avviso']})" if avvisi else ""))
     return payload
+
 
 if __name__ == "__main__":
     aggiorna()

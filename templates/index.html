@@ -171,6 +171,17 @@
       margin-bottom: 20px;
     }
 
+    #avviso-bar {
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 13px;
+      color: #fca5a5;
+      display: none;
+      margin-bottom: 20px;
+    }
+
     /* ── Cards grid ─────────────────────────────────────── */
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
     .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; }
@@ -581,7 +592,8 @@
   </header>
 
   <!-- Status bar -->
-  <div id="status-bar">⏳ Aggiornamento in corso — recupero dati da GME e TTF...</div>
+  <div id="status-bar">⏳ Recupero esiti PUN e PSV dal GME...</div>
+  <div id="avviso-bar"></div>
 
   <!-- ═══ SEZIONE 1: GRAFICI PUN E PSV ════════════════════ -->
   <div class="section-title">📈 Andamento Prezzi — Ultimi 13 Mesi</div>
@@ -597,7 +609,7 @@
 
     <!-- Grafico PSV -->
     <div class="card psv">
-      <div class="card-title"><span class="dot"></span> PSV/TTF — Gas Naturale (€/Smc)</div>
+      <div class="card-title"><span class="dot"></span> PSV — Gas Naturale (€/Smc · GME MGP-GAS)</div>
       <div class="chart-wrap">
         <canvas id="chartPSV"></canvas>
       </div>
@@ -618,7 +630,7 @@
             <th>PUN (€/MWh)</th>
             <th>Fonte PUN</th>
             <th>PSV (€/Smc)</th>
-            <th>PSV/TTF (€/MWh)</th>
+            <th>PSV (€/MWh)</th>
             <th>Fonte PSV</th>
           </tr>
         </thead>
@@ -640,7 +652,7 @@
             <th>PUN (€/MWh)</th>
             <th>Var. PUN</th>
             <th>PSV (€/Smc)</th>
-            <th>PSV/TTF (€/MWh)</th>
+            <th>PSV (€/MWh)</th>
             <th>Var. PSV</th>
           </tr>
         </thead>
@@ -652,7 +664,7 @@
   </div>
 
   <!-- ═══ SEZIONE 3: SIMULATORE BOLLETTE ══════════════════ -->
-  <div class="section-title">🧮 Simulatore Bolletta Sorgenia</div>
+  <div class="section-title">🧮 Simulatore Bolletta</div>
   <div class="grid-2" style="margin-bottom:24px;">
 
     <div class="card sim">
@@ -712,7 +724,7 @@
   </div>
 
   <!-- ═══ SEZIONE 4: PARAMETRI CONTRATTO ══════════════════ -->
-  <div class="section-title">⚙️ Parametri Contratto Sorgenia</div>
+  <div class="section-title">⚙️ Parametri Contratto</div>
   <div class="card" style="margin-bottom:24px;">
     <div class="card-title"><span class="dot" style="background:#f59e0b;box-shadow:0 0 8px #f59e0b"></span> Condizioni Economiche (modificabili)</div>
     <div class="param-grid">
@@ -741,7 +753,7 @@
   </div>
 
   <footer>
-    LifeOS · Dashboard Energia · Dati GME e TTF · Aggiornato <span id="footer-date">—</span>
+    LifeOS · EnergyTrack · Dati GME (Esiti MGP e MGP-GAS) · Aggiornato <span id="footer-date">—</span>
   </footer>
 
 </div><!-- /container -->
@@ -804,14 +816,23 @@ function renderEnergia() {
   const punKeys = Object.keys(punDaily).sort();
   const psvKeys = Object.keys(psvDaily).sort();
 
+  // L'ultimo valore può essere quello di domani (il GME lo pubblica in anticipo): mostra la data
+  const ggmm = (iso) => iso.substring(8, 10) + '/' + iso.substring(5, 7);
   if (punKeys.length) {
-    const lastPUN = punDaily[punKeys[punKeys.length - 1]];
-    document.getElementById('pun-oggi').textContent = fmt(lastPUN, 4) + ' €/kWh';
+    const lastKey = punKeys[punKeys.length - 1];
+    document.querySelector('#badge-pun .label').textContent = 'PUN ' + ggmm(lastKey);
+    document.getElementById('pun-oggi').textContent = fmt(punDaily[lastKey], 4) + ' €/kWh';
   }
   if (psvKeys.length) {
-    const lastPSV = psvDaily[psvKeys[psvKeys.length - 1]];
-    document.getElementById('psv-oggi').textContent = fmt(lastPSV, 4) + ' €/Smc';
+    const lastKey = psvKeys[psvKeys.length - 1];
+    document.querySelector('#badge-psv .label').textContent = 'PSV ' + ggmm(lastKey);
+    document.getElementById('psv-oggi').textContent = fmt(psvDaily[lastKey], 4) + ' €/Smc';
   }
+
+  // Avviso se qualche dato non è arrivato dal GME
+  const avviso = document.getElementById('avviso-bar');
+  avviso.textContent = d.avviso ? '⚠️ ' + d.avviso : '';
+  avviso.style.display = d.avviso ? 'block' : 'none';
 
   // Last update
   if (d.aggiornato_il) {
@@ -1117,32 +1138,120 @@ function renderBarChart(canvasId, labels, datasets, accentColor) {
 // AGGIORNAMENTO PREZZI
 // ═══════════════════════════════════════════════════════════════════════
 
+const MESI_STORICO = 14;
+const MWH_PER_SMC = 0.03852 / 3.6;   // PCS del contratto: 1 Smc = 0,03852 GJ
+const GAS_IN_PARALLELO = 4;          // mesi gas scaricati contemporaneamente
+
+// Mesi da scaricare: da 14 mesi fa fino al mese di domani (il GME pubblica in anticipo)
+function mesiDaScaricare() {
+  const oggi = new Date();
+  const domani = new Date(oggi.getFullYear(), oggi.getMonth(), oggi.getDate() + 1);
+  const mesi = [];
+  for (let d = new Date(oggi.getFullYear(), oggi.getMonth() - MESI_STORICO, 1); d <= domani;
+       d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) {
+    mesi.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return mesi;
+}
+
+async function getJson(url) {
+  const r = await fetch(url);
+  const data = await r.json().catch(() => ({ errore: 'risposta non valida (HTTP ' + r.status + ')' }));
+  if (!r.ok || data.errore) throw new Error(data.errore || 'HTTP ' + r.status);
+  return data;
+}
+
+function mediaPerMese(daily) {
+  const perMese = {};
+  for (const [giorno, val] of Object.entries(daily)) (perMese[giorno.substring(0, 7)] ||= []).push(val);
+  const medie = {};
+  for (const mese of Object.keys(perMese).sort()) {
+    const v = perMese[mese];
+    medie[mese] = Math.round(v.reduce((a, b) => a + b, 0) / v.length * 1e6) / 1e6;
+  }
+  return medie;
+}
+
+function fontiMesi(medie) {
+  const oggi = new Date();
+  const corrente = `${oggi.getFullYear()}-${String(oggi.getMonth() + 1).padStart(2, '0')}`;
+  return Object.fromEntries(Object.keys(medie).map(m => [m, m >= corrente ? 'Reale (GME) · mese in corso' : 'Reale (GME)']));
+}
+
+function ordinato(obj) {
+  return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)));
+}
+
 async function avviaaAggiornamento() {
   const btn = document.getElementById('btn-aggiorna');
+  const statusBar = document.getElementById('status-bar');
   btn.classList.add('loading');
   btn.disabled = true;
   document.getElementById('btn-text').textContent = 'Scarico prezzi...';
-  document.getElementById('status-bar').style.display = 'block';
+  statusBar.style.display = 'block';
 
   try {
-    const r = await fetch('/api/aggiorna', { method: 'POST' });
-    const data = await r.json();
-    
-    if (data.errore) {
-      throw new Error(data.errore);
-    }
-    
-    datiEnergia = data;
+    const mesi = mesiDaScaricare();
+    const avvisi = [];
+    let completati = 0;
+    const mostraAvanzamento = () =>
+      statusBar.textContent = `⏳ Recupero esiti dal GME... gas ${completati}/${mesi.length} mesi`;
+    mostraAvanzamento();
+
+    // PUN: una sola richiesta, in parallelo con il gas
+    const punPromise = getJson('/api/pun').catch(e => {
+      avvisi.push('PUN non disponibile (' + e.message + ')');
+      return { pun_daily: {}, pun_monthly: {} };
+    });
+
+    // Gas: un mese per richiesta (i mesi chiusi arrivano dalla cache di Vercel)
+    const gasMwh = {}, mesiMancanti = [];
+    let erroreGas = '';
+    const coda = [...mesi];
+    const lavoratore = async () => {
+      while (coda.length) {
+        const mese = coda.shift();
+        try {
+          Object.assign(gasMwh, (await getJson('/api/gas/' + mese)).giorni);
+        } catch (e) {
+          mesiMancanti.push(fmtMese(mese));
+          erroreGas = e.message;
+        }
+        completati++;
+        mostraAvanzamento();
+      }
+    };
+    await Promise.all(Array.from({ length: GAS_IN_PARALLELO }, lavoratore));
+    const pun = await punPromise;
+
+    if (mesiMancanti.length) avvisi.push(`PSV mancante per ${mesiMancanti.join(', ')} (${erroreGas})`);
+    if (!Object.keys(pun.pun_daily).length && !Object.keys(gasMwh).length) throw new Error(avvisi.join(' · '));
+
+    const psvDaily = {};
+    for (const [giorno, mwh] of Object.entries(ordinato(gasMwh))) psvDaily[giorno] = Math.round(mwh * MWH_PER_SMC * 1e6) / 1e6;
+    const psvMonthly = mediaPerMese(psvDaily);
+
+    datiEnergia = {
+      aggiornato_il: new Date().toISOString(),
+      avviso: avvisi.join(' · ') || null,
+      pun_daily: pun.pun_daily,
+      pun_monthly: pun.pun_monthly,
+      fonti_pun: fontiMesi(pun.pun_monthly),
+      psv_daily: psvDaily,
+      psv_monthly: psvMonthly,
+      fonti_psv: fontiMesi(psvMonthly),
+    };
     renderEnergia();
-    
-    showToast('✅ Dati scaricati con successo!', 'success');
+
+    if (avvisi.length) showToast('⚠️ Dati parziali: ' + avvisi.join(' · '), 'error');
+    else showToast('✅ Dati GME scaricati!', 'success');
   } catch (e) {
     showToast('❌ Errore: ' + e.message, 'error');
   } finally {
     btn.classList.remove('loading');
     btn.disabled = false;
     document.getElementById('btn-text').textContent = 'Aggiorna Prezzi';
-    document.getElementById('status-bar').style.display = 'none';
+    statusBar.style.display = 'none';
   }
 }
 
