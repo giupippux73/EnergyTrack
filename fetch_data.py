@@ -29,15 +29,41 @@ OUTPUT = BASE_DIR / "dati_energia.json"
 
 # ─── Parametri contratto Sorgenia ────────────────────────────────────────────
 PCS = 0.03852           # GJ/Smc (fattore di conversione gas)
-PERDITE_RETE = 0.098    # ~9.8% Q3 2026 (coefficiente ARERA, aggiornare trimestralmente)
-FEE_LUCE = 0.014        # €/kWh — Primi 12 mesi (dal 13° mese: 0.037 + Indice GO)
+PERDITE_RETE = 0.10     # 10% in bassa tensione (condizioni economiche e bolletta set-26)
+FEE_LUCE = 0.007        # €/kWh — Listino 0.014 meno 0.007 di sconto per contatore orario
 FEE_GAS = 0.05          # €/Smc — Primi 12 mesi (dal 13° mese: 0.10 €/Smc)
-FEE_LUCE_ANNO2 = 0.037  # €/kWh — Dal 13° mese di fornitura
+FEE_LUCE_ANNO2 = 0.030  # €/kWh — Dal 13° mese: 0.037 meno 0.007 (+ Indice GO)
 FEE_GAS_ANNO2 = 0.10    # €/Smc — Dal 13° mese di fornitura
-QUOTA_FISSA_POD = 72.0  # €/anno — Corrispettivo commercializzazione luce (contratto)
+QUOTA_FISSA_POD = 73.08 # €/anno — In bolletta 6.09 €/mese (il contratto dice 72: chiesto a Sorgenia)
 QUOTA_FISSA_PDR = 72.0  # €/anno — Corrispettivo commercializzazione gas (contratto)
+SCONTO_FEDELTA_MESE = 0.30  # €/mese per fornitura — 5% di 72 €/anno nei primi 12 mesi
+# Contatore orario: ogni ora si paga al PUN di quell'ora e i consumi serali costano di più.
+# Rapporto PUN pagato / PUN medio GME, ricavato dalla bolletta di set-26 (0,21717 / 0,20754).
+COEFF_PROFILO_ORARIO = 1.0464
 MESI_SCONTO = 15        # numero di bollette con sconto SEQUOIA15
 SCONTO_TOT = 100.0      # € totali sconto (50€ luce + 50€ gas)
+
+# ─── Componenti ARERA e imposte (dalle bollette di settembre 2026) ───────────
+# ARERA le aggiorna ogni trimestre: riprenderle dagli "Elementi di dettaglio"
+# dell'ultima bolletta quando cambiano.
+DISPACCIAMENTO_LUCE = 0.01505289       # €/kWh — corrispettivo CDISPD
+POTENZA_KW = 3.0                       # kW impegnati
+RETE_LUCE_FISSA = 1.92                 # €/mese
+RETE_LUCE_POTENZA = 1.97656667         # €/kW/mese
+RETE_LUCE_KWH = 0.0119 + 0.00283       # €/kWh — distribuzione + maggiorazioni UC
+ONERI_LUCE_KWH = 0.031515 + 0.001638   # €/kWh — ASOS + ARIM
+ACCISA_LUCE_KWH = 0.0227               # €/kWh — residenti fino a 3 kW: vedi _accisa_luce()
+IVA_LUCE = 0.10
+
+RETE_GAS_FISSA = 6.1325 + 1.15041667   # €/mese — distribuzione + canone comunale
+RETE_GAS_SMC = 0.07668019 + 0.111183 + 0.03846154  # €/Smc — trasporto, distribuzione, altri oneri (scaglione 120-480)
+ONERI_GAS_FISSA = -1.8025              # €/mese — UG2 (è uno sconto)
+ONERI_GAS_SMC = 0.0496 + 0.02820513 + 0.00769231   # €/Smc — UG2, altri oneri, UG3
+ACCISA_GAS_SMC = 0.175 + 0.005165      # €/Smc — erariale + addizionale regionale (scaglione 120-480 Smc/anno)
+IVA_GAS_CONSUMI = 0.10                 # sulla parte a consumo (fino a 480 Smc/anno)
+IVA_GAS_FISSA = 0.22                   # sulle quote fisse
+
+CANONE_TV_MESE = 9.0                   # €/mese, addebitato da gennaio a ottobre
 
 # ─── Portale GME ─────────────────────────────────────────────────────────────
 GME_SITE = "https://gme.mercatoelettrico.org"
@@ -225,45 +251,67 @@ def fonti_mensili(mesi) -> dict[str, str]:
 
 # ─── Stima bolletta Sorgenia ─────────────────────────────────────────────────
 
+def _accisa_luce(kwh: float) -> float:
+    """
+    Accisa per abitazione di residenza con potenza fino a 3 kW (bolletta mensile):
+    esente fino a 150 kWh, tassati i kWh oltre 150 fino a 220, oltre 220 kWh
+    l'agevolazione si perde su tutto il consumo. Approssimazione: da verificare
+    con la prima bolletta invernale sopra i 150 kWh.
+    """
+    if kwh <= 150:
+        return 0.0
+    if kwh <= 220:
+        return (kwh - 150) * ACCISA_LUCE_KWH
+    return kwh * ACCISA_LUCE_KWH
+
+
 def stima_bolletta(
-    pun_medio: float,       # €/kWh
+    pun_medio: float,       # €/kWh — media mensile GME (corretta con COEFF_PROFILO_ORARIO)
     psv_medio: float,       # €/Smc
-    kwh: float,             # kWh consumati nel periodo
-    smc: float,             # Smc consumati nel periodo
+    kwh: float,             # kWh consumati nel mese
+    smc: float,             # Smc consumati nel mese
     sconto_residuo: float = 0.0,
+    canone_tv: float = 0.0,
 ) -> dict:
-    """Calcola stima bolletta Sorgenia con parametri contratto e restituisce dettagli completi."""
-    # Dettagli Luce
-    costo_materia_luce = pun_medio * (1 + PERDITE_RETE) * kwh
-    costo_spread_luce = FEE_LUCE * kwh
-    quota_fissa_luce = QUOTA_FISSA_POD / 12
-    spesa_luce = costo_materia_luce + costo_spread_luce + quota_fissa_luce
-    prezzo_luce = spesa_luce / kwh if kwh > 0 else 0
+    """
+    Stima della bolletta mensile Sorgenia completa, voce per voce come negli
+    "Elementi di dettaglio": vendita, rete, oneri di sistema, accise e IVA.
+    """
+    # Luce (IVA 10% su tutto)
+    pun_pagato = pun_medio * COEFF_PROFILO_ORARIO
+    luce = {
+        "energia": pun_pagato * (1 + PERDITE_RETE) * kwh + (FEE_LUCE + DISPACCIAMENTO_LUCE) * kwh,
+        "vendita_fissa": QUOTA_FISSA_POD / 12 - SCONTO_FEDELTA_MESE,
+        "rete": RETE_LUCE_FISSA + RETE_LUCE_POTENZA * POTENZA_KW + RETE_LUCE_KWH * kwh,
+        "oneri": ONERI_LUCE_KWH * kwh,
+        "accise": _accisa_luce(kwh),
+    }
+    luce["iva"] = sum(luce.values()) * IVA_LUCE
+    spesa_luce = sum(luce.values())
 
-    # Dettagli Gas
-    costo_materia_gas = psv_medio * smc
-    costo_spread_gas = FEE_GAS * smc
-    quota_fissa_gas = QUOTA_FISSA_PDR / 12
-    spesa_gas = costo_materia_gas + costo_spread_gas + quota_fissa_gas
-    prezzo_gas = spesa_gas / smc if smc > 0 else 0
+    # Gas (IVA 10% sulla parte a consumo, 22% sulle quote fisse)
+    gas = {
+        "energia": (psv_medio + FEE_GAS) * smc,
+        "vendita_fissa": QUOTA_FISSA_PDR / 12 - SCONTO_FEDELTA_MESE,
+        "rete": RETE_GAS_FISSA + RETE_GAS_SMC * smc,
+        "oneri": ONERI_GAS_FISSA + ONERI_GAS_SMC * smc,
+        "accise": ACCISA_GAS_SMC * smc,
+    }
+    parte_consumi = gas["energia"] + (RETE_GAS_SMC + ONERI_GAS_SMC) * smc + gas["accise"]
+    parte_fissa = gas["vendita_fissa"] + RETE_GAS_FISSA + ONERI_GAS_FISSA
+    gas["iva"] = parte_consumi * IVA_GAS_CONSUMI + parte_fissa * IVA_GAS_FISSA
+    spesa_gas = sum(gas.values())
 
-    totale = spesa_luce + spesa_gas - sconto_residuo
+    totale = spesa_luce + spesa_gas + canone_tv - sconto_residuo
 
     return {
-        "prezzo_luce_kwh": round(prezzo_luce, 5),
+        "prezzo_luce_kwh": round(spesa_luce / kwh, 5) if kwh > 0 else 0,
         "spesa_luce": round(spesa_luce, 2),
-        "dettagli_luce": {
-            "materia": round(costo_materia_luce, 2),
-            "spread": round(costo_spread_luce, 2),
-            "fissa": round(quota_fissa_luce, 2)
-        },
-        "prezzo_gas_smc": round(prezzo_gas, 4),
+        "dettagli_luce": {k: round(v, 2) for k, v in luce.items()},
+        "prezzo_gas_smc": round(spesa_gas / smc, 4) if smc > 0 else 0,
         "spesa_gas": round(spesa_gas, 2),
-        "dettagli_gas": {
-            "materia": round(costo_materia_gas, 2),
-            "spread": round(costo_spread_gas, 2),
-            "fissa": round(quota_fissa_gas, 2)
-        },
+        "dettagli_gas": {k: round(v, 2) for k, v in gas.items()},
+        "canone_tv": round(canone_tv, 2),
         "sconto": round(sconto_residuo, 2),
         "totale": round(max(totale, 0), 2)
     }
