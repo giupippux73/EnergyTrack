@@ -671,12 +671,12 @@
       <div class="card-title"><span class="dot" style="background:#3b82f6;box-shadow:0 0 8px #3b82f6"></span> Parametri Simulazione</div>
       <div class="sim-grid">
         <div class="input-group">
-          <label>Consumi Luce (kWh)</label>
-          <input type="number" id="sim-kwh" value="376" min="0" step="10" />
+          <label>Consumi Luce del mese (kWh)</label>
+          <input type="number" id="sim-kwh" value="188" min="0" step="10" />
         </div>
         <div class="input-group">
-          <label>Consumi Gas (Smc)</label>
-          <input type="number" id="sim-smc" value="52" min="0" step="1" />
+          <label>Consumi Gas del mese (Smc)</label>
+          <input type="number" id="sim-smc" value="26" min="0" step="1" />
         </div>
         <div class="input-group">
           <label>Mese di riferimento</label>
@@ -729,8 +729,8 @@
     <div class="card-title"><span class="dot" style="background:#f59e0b;box-shadow:0 0 8px #f59e0b"></span> Condizioni Economiche (modificabili)</div>
     <div class="param-grid">
       <div class="param-item">
-        <label>Fee Luce — anno 1 (€/kWh)</label>
-        <input type="number" id="p-fee-luce" value="0.014" step="0.001" min="0" />
+        <label>Fee Luce — anno 1, contatore orario (€/kWh)</label>
+        <input type="number" id="p-fee-luce" value="0.007" step="0.001" min="0" />
       </div>
       <div class="param-item">
         <label>Fee Gas — anno 1 (€/Smc)</label>
@@ -738,11 +738,11 @@
       </div>
       <div class="param-item">
         <label>Perdite rete ARERA</label>
-        <input type="number" id="p-perdite" value="0.098" step="0.001" min="0" max="0.2" />
+        <input type="number" id="p-perdite" value="0.100" step="0.001" min="0" max="0.2" />
       </div>
       <div class="param-item">
         <label>Quota fissa Luce (€/anno)</label>
-        <input type="number" id="p-pod" value="72.00" step="0.01" min="0" />
+        <input type="number" id="p-pod" value="73.08" step="0.01" min="0" />
       </div>
       <div class="param-item">
         <label>Quota fissa Gas (€/anno)</label>
@@ -1266,7 +1266,7 @@ async function simulaBolletta() {
   const mese = document.getElementById('sim-mese').value;
 
   // Determina PUN e PSV per il mese selezionato (o ultimo disponibile)
-  let pun_medio = 0, psv_medio = 0, mese_label = 'ultimo disponibile';
+  let pun_medio = 0, psv_medio = 0, mese_label = 'ultimo disponibile', mese_key = '';
 
   if (datiEnergia) {
     const pun_m = datiEnergia.pun_monthly || {};
@@ -1275,48 +1275,56 @@ async function simulaBolletta() {
     if (mese && pun_m[mese]) {
       pun_medio = pun_m[mese];
       psv_medio = psv_m[mese] || 0;
-      mese_label = fmtMese(mese);
+      mese_key = mese;
     } else {
       // Prendi l'ultimo disponibile
       const lastPunKey = Object.keys(pun_m).sort().pop();
       const lastPsvKey = Object.keys(psv_m).sort().pop();
-      if (lastPunKey) { pun_medio = pun_m[lastPunKey]; mese_label = fmtMese(lastPunKey); }
+      if (lastPunKey) { pun_medio = pun_m[lastPunKey]; mese_key = lastPunKey; }
       if (lastPsvKey) psv_medio = psv_m[lastPsvKey];
     }
   }
+  if (mese_key) mese_label = fmtMese(mese_key);
 
   if (!pun_medio && !psv_medio) {
     showToast('⚠️ Nessun dato disponibile. Clicca Aggiorna Prezzi prima.', 'error');
     return;
   }
 
+  // Canone TV: 9 € al mese, addebitato da gennaio a ottobre
+  const canone_tv = mese_key && parseInt(mese_key.substring(5, 7)) <= 10 ? 9 : 0;
+
   try {
     const r = await fetch('/api/simula', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pun_medio, psv_medio, kwh, smc, sconto_residuo: sconto })
+      body: JSON.stringify({ pun_medio, psv_medio, kwh, smc, sconto_residuo: sconto, canone_tv })
     });
     const res = await r.json();
 
     if (res.errore) { showToast('❌ ' + res.errore, 'error'); return; }
 
+    const dettaglio = (d) =>
+      `Energia: ${fmtEur(d.energia)}<br>` +
+      `Quota fissa Sorgenia: ${fmtEur(d.vendita_fissa)}<br>` +
+      `Rete: ${fmtEur(d.rete)}<br>` +
+      `Oneri di sistema: ${fmtEur(d.oneri)}<br>` +
+      `Accise: ${fmtEur(d.accise)}<br>` +
+      `IVA: ${fmtEur(d.iva)}`;
+
     document.getElementById('res-luce').textContent = fmtEur(res.spesa_luce);
-    document.getElementById('res-dettaglio-luce').innerHTML = 
-      `Materia: ${fmtEur(res.dettagli_luce.materia)}<br>` +
-      `Spread/Fee: ${fmtEur(res.dettagli_luce.spread)}<br>` +
-      `Quota Fissa: ${fmtEur(res.dettagli_luce.fissa)}`;
-    document.getElementById('res-prezzo-luce').textContent = fmt(res.prezzo_luce_kwh, 5) + ' €/kWh medio effettivo';
-    
+    document.getElementById('res-dettaglio-luce').innerHTML = dettaglio(res.dettagli_luce);
+    document.getElementById('res-prezzo-luce').textContent = fmt(res.prezzo_luce_kwh, 4) + ' €/kWh tutto compreso';
+
     document.getElementById('res-gas').textContent = fmtEur(res.spesa_gas);
-    document.getElementById('res-dettaglio-gas').innerHTML = 
-      `Materia: ${fmtEur(res.dettagli_gas.materia)}<br>` +
-      `Spread/Fee: ${fmtEur(res.dettagli_gas.spread)}<br>` +
-      `Quota Fissa: ${fmtEur(res.dettagli_gas.fissa)}`;
-    document.getElementById('res-prezzo-gas').textContent = fmt(res.prezzo_gas_smc, 4) + ' €/Smc medio effettivo';
-    
+    document.getElementById('res-dettaglio-gas').innerHTML = dettaglio(res.dettagli_gas);
+    document.getElementById('res-prezzo-gas').textContent = fmt(res.prezzo_gas_smc, 4) + ' €/Smc tutto compreso';
+
     document.getElementById('res-totale').textContent = fmtEur(res.totale);
     document.getElementById('res-note').textContent =
-      `Mese: ${mese_label} · PUN ${fmt(pun_medio,5)} · PSV ${fmt(psv_medio,4)} · Sconto -${fmtEur(sconto)}`;
+      `Mese: ${mese_label} · PUN medio ${fmt(pun_medio,5)} · PSV ${fmt(psv_medio,4)}` +
+      (res.canone_tv ? ` · Canone TV +${fmtEur(res.canone_tv)}` : '') +
+      (sconto ? ` · Sconto -${fmtEur(sconto)}` : '');
 
     document.getElementById('sim-result').classList.add('visible');
     document.getElementById('sim-placeholder').style.display = 'none';
