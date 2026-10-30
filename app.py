@@ -82,6 +82,7 @@ def api_simula():
             kwh=float(body.get("kwh", 0)),
             smc=float(body.get("smc", 0)),
             sconto_residuo=float(body.get("sconto_residuo", 0)),
+            canone_tv=float(body.get("canone_tv", 0)),
         )
         return jsonify(risultato)
     except Exception as e:
